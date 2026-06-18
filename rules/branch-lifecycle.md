@@ -124,6 +124,28 @@ the user with a one-line status:
 - Never abandon work without surfacing it — abandoned-but-undeleted
   is the worst of both worlds.
 
+## Where in-progress work-state lives
+
+GitHub Issues is the single persistent cross-session tracker (the principle
+lives in global `CLAUDE.md`; the pre-commit hook blocks ad-hoc tracker files
+like `NEXT_STEPS.md` / `BACKLOG.md`). This rule owns the *branch-side* of that:
+how a half-finished branch carries its own resume state.
+
+**Cross-session resume anchor.** Work that spans sessions is resumed from three
+durable places, never from an ad-hoc notes file:
+
+- the **branch** itself (committed work — the code is the truth),
+- a **live checklist in the tracking issue's body** (what's done / what
+  remains) — update it at every session boundary; this is the resume anchor a
+  fresh session reads first,
+- a **draft PR** once there's a meaningful diff (reviewable). Before there's a
+  diff, the issue checklist alone carries the state.
+
+**Docs-vs-tracking razor.** Before writing a markdown file, ask: *does this
+describe what* is*, or what* should be*?* What-is goes in `docs/` (durable
+architectural knowledge). What-should-be is work — file it as an issue, and
+write the doc once the work lands.
+
 ## Honesty
 
 When listing branches in a status report, distinguish:

@@ -1,11 +1,19 @@
 # Development Control Flow — rev 2
 
 ## Status
-Revision 2. Synced with `specs/2026-05-31-branch-tier-autonomy-design.md` (rev 2)
-and `diagrams/branch-tier-autonomy.md`. Lives in this directory for iteration.
+Revision 2, with rev-3 changes in progress. Was synced with
+`specs/2026-05-31-branch-tier-autonomy-design.md` (rev 2) and
+`diagrams/branch-tier-autonomy.md`. Lives in this directory for iteration.
 When ratified, the rule files promote to `~/.claude/rules/` and this document
 moves to `docs/claude-process.md` (or equivalent) as the master reference for
 how we work together.
+
+**Rev 3 (in progress):** `single-tracker.md` deleted and redistributed — the
+forbidden-filename *invariant* → the pre-commit hook; the *principle* → global
+`~/.claude/CLAUDE.md`; the resumption + docs-vs-tracking *practices* →
+`branch-lifecycle.md`. Spec sync is pending; the broader mechanism-model
+refinement (treating global `CLAUDE.md` as the always-on "constitution" tier
+above the topical `rules/*.md`) is under discussion, not yet applied to D1/§1.
 
 **Diagram source of truth:** the mermaid blocks in
 `diagrams/branch-tier-autonomy.md`. The diagrams embedded here are copies for
@@ -417,7 +425,7 @@ validations) would be silently skipped.
 
 **`pre-commit`** — (a) reject staged forbidden tracker filenames
 (`NEXT_STEPS|BACKLOG|TODO|PHASE_*`.md, `docs/issues-to-file.md`) — mechanically
-enforcing the single-tracker rule; (b) reject commits while `main`/`master` is
+enforcing the forbidden-tracker invariant; (b) reject commits while `main`/`master` is
 checked out; then **chain to the repo-local pre-commit** (same mechanism: look
 for `<repo>/.git/hooks/pre-commit`, execute if present, propagate exit code).
 
@@ -431,15 +439,23 @@ With mechanical concerns moved out, standing rules shrink to lean judgment:
 |---|---|---|
 | `definition-of-done.md` | **keep, lean** | What "done" means; the DoD report contract. Honesty is *also* enforced by the reviewer agent in autonomous mode. |
 | `no-shed.md` | **keep, lean** | The no-shim / no-bug-shed philosophy. The shim taxonomy is *also* the reviewer agent's checklist. |
-| `branch-lifecycle.md` | **keep, lean** | + the two-tier model. |
+| `branch-lifecycle.md` | **keep, lean** | + the two-tier model; absorbs the cross-session resume anchor + docs-vs-tracking razor from the retired `single-tracker.md`. |
 | `local-ci-parity.md` | **shrink** | `act` demoted to optional pre-check; expected-green still before the `dev→main` PR. |
-| `single-tracker.md` | **shrink** | One-liner; the pre-commit hook enforces it. |
+| `single-tracker.md` | **deleted — redistributed** | Invariant → pre-commit hook; principle → global `CLAUDE.md`; practices → `branch-lifecycle.md`. |
 
 **Not created** (category errors): `workflow-dispatch.md` (folds into Gate-A +
 workflow code), `adversarial-review.md` (it is the reviewer agent + a workflow
 stage).
 
-**Net: ~3 lean rules + 2 shrunk, instead of 7. Per-session context goes down.**
+**Net: 3 lean rules (`definition-of-done`, `no-shed`, `branch-lifecycle`) + 1
+shrunk (`local-ci-parity`), instead of 7; `single-tracker` is deleted and its
+concerns redistributed by mechanism. Per-session context goes down.**
+
+**Promoted to the constitution:** the single-tracker *principle* lands in global
+`~/.claude/CLAUDE.md` at promotion, as:
+> GitHub Issues is the only persistent cross-session tracker — file bugs,
+> features, and follow-ups as issues, never as ad-hoc markdown. Generate status
+> snapshots on demand from the source of truth; never hand-maintain them.
 
 ---
 
@@ -476,7 +492,7 @@ Where each rule fires in the control flow:
 | `no-shed.md` | Bug-discovered decision (D2) + reviewer agent checklist | Default-fix; orthogonal exception requires GH issue; reviewer catches shims |
 | `branch-lifecycle.md` | Branch creation + cleanup (D2) | Naming convention at creation; mandatory delete at close |
 | `local-ci-parity.md` | Optional pre-check (D2) | `act` invocation optional; real CI is the gate |
-| `single-tracker.md` | File orthogonal bugs (D2) + pre-commit hook | GH issue is only persistence target; forbidden filenames blocked at commit |
+| forbidden-tracker invariant | pre-commit hook (commit time) | Forbidden filenames blocked at commit; principle in global `CLAUDE.md`; resume + docs-vs-tracking practices in `branch-lifecycle.md` |
 
 ---
 
