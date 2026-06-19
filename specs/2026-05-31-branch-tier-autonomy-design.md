@@ -1,12 +1,20 @@
 # Branch-Tier Autonomy + Mechanism Model — Design Spec
 
-- **Date:** 2026-05-31 (rev 2)
+- **Date:** 2026-05-31, last revised 2026-06-18 (rev 3)
 - **Status:** Draft — staged in `ClaudeDevCycle/` for review. Portable: the whole
   directory lifts out to its real home.
 - **Rev-2 note:** Rev 1 leaned rules-centric (heading toward a 7th rule for
-  adversarial review). That was a category error. This revision introduces the
+  adversarial review). That was a category error. Rev 2 introduced the
   **mechanism model**: safety-critical control is *mechanical* (hooks / agents /
   workflows), and standing **rules shrink back to lean judgment**.
+- **Rev-3 note:** the "Rules" mechanism splits into two tiers — the always-on
+  **constitution** (`CLAUDE.md`) and the **topical rules** (`rules/*.md`, loaded
+  on-demand). The rule set is re-sorted by mechanism: `single-tracker` deleted,
+  `local-ci-parity` demoted to a project reference, `no-shed` thinned, and the
+  load-bearing *principles* elevated into the constitution. Net 3 global rule
+  files (down from 7). On-demand loading turns out to have a concrete native
+  mechanism in Claude Code (`paths:` frontmatter, or a lean index + Read), not
+  just an aspiration — see §9.
 
 ## Context
 
@@ -31,13 +39,22 @@ Four mechanisms, each for a distinct kind of concern:
 | Mechanism | For | Session-context cost | Trust model |
 |---|---|---|---|
 | **Hooks** | Hard invariants | **zero** (always on) | mechanical — un-bypassable by a forgetful agent |
-| **Rules** | Judgment / discipline | small (loaded every session) — keep **lean** | guides a thinking agent (works with a human present) |
+| **Rules** | Judgment / discipline (two tiers — see below) | constitution always-on; topical files on-demand | guides a thinking agent (works with a human present) |
 | **Agents** | Fixed-prompt specialists | **zero until invoked** | invoked by an orchestrator with fixed inputs — implementer can't game them |
 | **Workflows** | Autonomous orchestration | **zero until dispatched** | deterministic control flow (caps, gates, fan-out) in code |
 
 **Principle:** safety-critical control (main protection, shim-catching, retry
 caps) lives in hooks / agents / workflows — **never** in rules. Rules are for
 the judgment a thinking agent applies when a human is in the loop.
+
+**The rules mechanism has two tiers (rev 3).** It splits by *when it loads*:
+
+- **Constitution** — global (`~/.claude/CLAUDE.md`) + project (`<repo>/CLAUDE.md`),
+  always loaded. The short, universal *stances* you never want forgotten (the
+  DoD, no-shed, and single-tracker principles). Must stay short.
+- **Topical rules** — `~/.claude/rules/*.md`, the substantial procedural detail
+  for one concern. **Loaded on-demand** (see §9 for the concrete mechanism), so a
+  session pays context only for the rules relevant to the work.
 
 ## 2. The per-task discipline has two execution modes
 
@@ -153,34 +170,66 @@ validations) would be silently skipped.
 
 **`pre-commit`** — (a) reject staged forbidden tracker filenames
 (`NEXT_STEPS|BACKLOG|TODO|PHASE_*`.md, `docs/issues-to-file.md`) — mechanically
-enforcing the single-tracker rule; (b) reject commits while `main`/`master` is
+enforcing the forbidden-tracker invariant; (b) reject commits while `main`/`master` is
 checked out; then **chain to the repo-local pre-commit** (same mechanism: look
 for `<repo>/.git/hooks/pre-commit`, execute if present, propagate exit code).
 
-## 9. Rules — shrink, don't grow
+## 9. Rules — shrink, don't grow (rev 3: sorted by mechanism)
 
-With mechanical concerns moved out, standing rules shrink to lean judgment:
+With mechanical concerns moved out and the constitution carrying the universal
+*principles*, the standing topical rules shrink to three:
 
-- `definition-of-done.md` — **keep, lean.** What "done" means; the DoD report
-  contract. (Honesty is *also* enforced by the reviewer agent in autonomous mode.)
-- `no-shed.md` — **keep, lean.** The no-shim / no-bug-shed philosophy. (The shim
-  taxonomy is *also* the reviewer agent's checklist; the rule states the
-  principle for interactive work.)
-- `branch-lifecycle.md` — **keep, lean.** + the two-tier model.
-- `local-ci-parity.md` — **shrink** to a short note (`act` demoted to an optional
-  pre-check; expected-green still before the `dev→main` PR).
-- `single-tracker.md` — **shrink** to a one-liner (the pre-commit hook enforces it).
+- `definition-of-done.md` — **keep, lean.** The DoD report contract: smoke depth,
+  surface-by-type playbook, report structure. Its one-line *stance* is elevated
+  to the constitution; honesty is *also* enforced by the reviewer agent.
+- `no-shed.md` — **keep, thin.** The orthogonality tests + the 5+-filings
+  escalation. Its *principle* is elevated to the constitution; the shim taxonomy
+  is *also* the reviewer agent's checklist.
+- `branch-lifecycle.md` — **keep, lean.** + the two-tier model; it also absorbs
+  the cross-session resume anchor + docs-vs-tracking razor from the retired
+  `single-tracker`.
+- `single-tracker.md` — **deleted, redistributed.** Invariant (forbidden tracker
+  filenames) → the pre-commit hook; principle → the constitution; practices →
+  `branch-lifecycle.md`. A one-line rule file is pure always-on overhead.
+- `local-ci-parity.md` — **demoted to project reference** (`docs/references/`).
+  The `act` how-to is project-specific (only where GitHub Actions exists); its
+  principle (expected-green first push, real CI is the gate) → the constitution.
 - `workflow-dispatch.md` — **not a standing rule.** Folds into Gate-A
-  authorization + workflow code + a brief process-doc note.
+  authorization + workflow code.
 - adversarial review — **not a rule.** It is the reviewer agent + a workflow stage.
 
-**Net: ~3 lean rules + 2 shrunk, instead of 7. Per-session context goes down.**
+**Net: 3 global rule files (`definition-of-done`, `no-shed`, `branch-lifecycle`),
+down from 7.** The elevated principles live in the constitution; the demoted
+`act` how-to lives in project `docs/`.
+
+### On-demand loading (the concrete mechanism)
+
+The shrink only pays off in tokens if the topical rules load on-demand rather
+than every session. In Claude Code, a `*.md` under `~/.claude/rules/` **without**
+`paths:` frontmatter loads unconditionally at launch (same priority as
+`CLAUDE.md`) — which is why all current rules are always in context. Two ways to
+make them on-demand:
+
+1. **Path-scoped rules** — add `paths:` glob frontmatter; the rule then loads
+   only when Claude touches a matching file. Ideal for file-type-specific rules
+   (e.g. `code-style` on source globs); a poor fit for whole-session process
+   rules that aren't tied to a file pattern.
+2. **Index + Read-on-demand** — keep the files out of the auto-load set and put a
+   lean index in the constitution naming each file with a one-line "read when
+   relevant" trigger. The index is a few always-on lines; the full file loads only
+   when the model opens it. Best fit for the process/judgment rules here.
+
+This is a **loading/config change to global `~/.claude/`**, applied at promotion
+with the user's go-ahead — not done as part of this staging work.
 
 ## 10. `act` / local CI parity
 
-Demoted from a gate to an optional cheap pre-check. Autonomous dev work iterates
-against **real CI** (read logs via MCP → fix → re-push, under the §7 cap). A
-green `act` run is still expected before opening the `dev→main` PR.
+Demoted from a gate to an optional cheap pre-check, and (rev 3) from a global
+rule to a **project-level reference** (`docs/references/local-ci-parity.md`) —
+the `act` how-to only matters where GitHub Actions exists. Autonomous dev work
+iterates against **real CI** (read logs via MCP → fix → re-push, under the §7
+cap). A green `act` run is still expected before opening the `dev→main` PR; that
+surviving principle lives in the constitution.
 
 ## 11. Capability unlocked (deferred build): federated multi-feature run
 
@@ -198,11 +247,17 @@ Gate B. Specced and built separately.
   `pre-commit` hooks; `ClaudeDevCycle/adr/0001-branch-tier-autonomy.md`.
 - **Not creating** (category errors): a `workflow-dispatch.md` rule, an
   `adversarial-review.md` rule.
-- **Edit / shrink:** `definition-of-done`, `no-shed`, `branch-lifecycle` (lean);
-  `local-ci-parity`, `single-tracker` (shrink); `control-flow.md` (add the
-  mechanism model + the revised gate model + redrawn diagrams).
+- **Constitution additions (rev 3):** the DoD / no-shed / single-tracker /
+  local-CI principle-lines, staged for `~/.claude/CLAUDE.md` (see
+  `control-flow.md` §15). Applied at promotion, not now.
+- **Rule changes (rev 3):** `definition-of-done`, `no-shed` (thinned),
+  `branch-lifecycle` (lean) kept as topical files; `single-tracker` **deleted**;
+  `local-ci-parity` **moved** to `docs/references/`; `control-flow.md` carries
+  the mechanism model + gate model + redrawn diagrams.
+- **Loading (rev 3):** make topical `rules/*.md` on-demand (`paths:` frontmatter
+  or a constitution index) — a global-config change applied at promotion.
 - **Settings:** allow/deny migration to global `~/.claude/settings.json`.
-- **Diagrams (redraw to match — see §13).**
+- **Diagrams:** D1 updated with the constitution tier; D2/D4 redraw still per §13.
 
 ## 13. Diagrams (to redraw after this spec's shape is confirmed)
 

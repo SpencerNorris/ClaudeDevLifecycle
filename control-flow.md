@@ -14,8 +14,8 @@ constitution; practices → `branch-lifecycle.md`). `local-ci-parity.md` demoted
 from a global rule to project reference (`docs/references/`). `no-shed` thinned.
 The DoD / no-shed / tracker / CI principles are staged for the constitution
 (§15). The mechanism model now treats global `CLAUDE.md` as the always-on
-*constitution* tier above the on-demand *topical rules* (§1, D1). Spec sync (the
-rev-2 snapshot) is pending. **No global config touched — the constitution
+*constitution* tier above the on-demand *topical rules* (§1, D1). The rev-2 spec
+is now brought to rev 3 to match. **No global config touched — the constitution
 additions are staged in §15 only, applied at promotion.**
 
 **Diagram source of truth:** the mermaid blocks in
@@ -67,11 +67,12 @@ The single "Rules" mechanism splits by *when it loads*:
   commands, no-shed's orthogonality tests). **Target loading: on-demand** — read
   when the work touches them, so a session pays context only for relevant rules.
 
-> **Known gap (rev 3):** today the harness auto-injects *all* `~/.claude/rules/*.md`
-> every session, so the on-demand saving isn't realized yet. Making topical rules
-> genuinely on-demand (per `CLAUDE.md`'s own "read when relevant" intent) is the
-> one change that turns the shrink effort into real token savings. It is a
-> loading/config change applied at promotion, not a content change.
+> **Known gap (rev 3):** Claude Code auto-loads every `~/.claude/rules/*.md` that
+> lacks `paths:` frontmatter at session start (same priority as `CLAUDE.md`), so
+> the on-demand saving isn't realized yet. The fix is native: add `paths:` glob
+> frontmatter (file-type rules), or keep a lean constitution index + Read the
+> file on demand (process rules). A global-config change applied at promotion,
+> not a content change.
 
 ---
 
