@@ -1,3 +1,9 @@
+---
+paths:
+  - "**/docs/adr/**"
+  - "**/adr/**"
+  - "**/*adr*.md"
+---
 # ADR Format Rules
 
 ## ADR location

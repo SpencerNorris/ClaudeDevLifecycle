@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+#
+# Global pre-push hook — protect main/master from being pushed.
+#
+# WHERE THIS RUNS
+#   Installed globally via `git config --global core.hooksPath ~/.claude/git-hooks`,
+#   so this script executes for EVERY push in EVERY repository on the machine.
+#   A spurious non-zero exit here would block ALL pushes everywhere, so this
+#   script fails SOFT: anything uncertain resolves toward "allow the push, then
+#   chain to the repo's own hook".
+#
+# WHAT IT DOES
+#   1. (ALWAYS) Capture stdin ONCE (git feeds the ref list on stdin, and stdin is
+#      only readable once — we must buffer it to reuse for both the check and the
+#      chained hook).
+#   2. (ALWAYS) If we are not inside a git repo, replay stdin to any repo-local
+#      hook and exit; otherwise exit 0.
+#   3. (OPT-IN ONLY) Reject the push if any updated remote ref names a protected
+#      branch (refs/heads/main or refs/heads/master, per GIT_PROTECTED_BRANCHES).
+#   4. (ALWAYS) Chain to the repo-local pre-push hook if one exists, replaying the
+#      captured stdin to it, because a global core.hooksPath SHADOWS .git/hooks/*.
+#
+# STDIN FORMAT (from git)
+#   One line per ref being pushed:
+#       <local-ref> SP <local-sha> SP <remote-ref> SP <remote-sha>
+#   A deletion has local-ref "(delete)" and a zero local-sha; we still inspect
+#   the <remote-ref> so that deleting main is also caught.
+#
+#   Arguments ($1, $2) from git are: <remote-name> <remote-url>.
+#
+# WHY OPT-IN (an intentional, documented deviation from the literal spec)
+#   Installing globally must not surprise-break unrelated repos (some legitimately
+#   push to main). So protected-branch enforcement is OPT-IN PER REPO, via ANY of:
+#       (a) a file ".claude/branch-tier" at the repo root, OR
+#       (b) env var CLAUDE_BRANCH_TIER=1, OR
+#       (c) git config claude.branchTier == true.
+#   Not opted in → no protected-branch check; the hook is transparent and only
+#   chains to the repo-local hook.
+#
+#   NOTE: GitHub server-side branch protection is the real guarantee for main;
+#   this hook is the local convenience layer that closes the bare-`git push` gap
+#   on repos that opt in.
+#
+# ROBUSTNESS NOTES
+#   - `set -u` catches unset-variable bugs. We deliberately avoid `set -e` and
+#     `set -o pipefail`: a benign non-zero status (grep no-match, an odd git
+#     state, the stdin read hitting EOF) must never spuriously fail a push. Every
+#     meaningful exit code is checked explicitly.
+#   - Exit 0 = allow push. Exit non-zero = block push (only on a real rejection,
+#     or because a chained repo hook rejected).
+
+set -u
+
+# ---------------------------------------------------------------------------
+# Step 1 — Capture stdin ONCE.
+#
+# Git provides the ref list on stdin, and a stream can only be drained once. We
+# read the WHOLE stdin into a variable now, then replay it (via a here-string) to
+# whichever consumers need it: our protected-branch check AND the chained
+# repo-local hook. `read -r -d '' ... || true` reads to EOF without choking on
+# the missing trailing NUL (read returns non-zero at EOF, which we ignore).
+# ---------------------------------------------------------------------------
+stdin_data=""
+IFS= read -r -d '' stdin_data || true
+
+# ---------------------------------------------------------------------------
+# Step 2 — Resolve key paths (used by enforcement and chaining).
+#   git_common_dir : the real .git directory (worktree-safe); repo-local hooks
+#                    live under "$git_common_dir/hooks".
+#   repo_root      : top of the working tree; where ".claude/branch-tier" lives.
+# Computed defensively; failures fall back to empty + safe behavior.
+# ---------------------------------------------------------------------------
+git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+in_git_repo=0
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    in_git_repo=1
+fi
+
+# ---------------------------------------------------------------------------
+# Helper — chain to the repo-local pre-push hook, replaying captured stdin.
+#
+# A global core.hooksPath SHADOWS .git/hooks/*, so without this the repo's own
+# pre-push (linters, custom validations) would silently never run. We run it with
+# the SAME arguments and FEED it the captured stdin, then return its exit code so
+# a repo-local rejection fails the push.
+#
+# Self-recursion guard: if the repo-local hook resolves to THIS very script, do
+# NOT invoke it (that would recurse forever). We compare resolved absolute paths.
+#
+# This function either `exec`s the repo hook (replacing this process and thereby
+# propagating its exit code) or, if there is no repo hook, returns so the caller
+# can exit 0.
+# ---------------------------------------------------------------------------
+chain_to_repo_hook_then_allow() {
+    if [ -n "$git_common_dir" ]; then
+        local repo_hook="$git_common_dir/hooks/pre-push"
+
+        if [ -f "$repo_hook" ] && [ -x "$repo_hook" ]; then
+            # Resolve paths to absolute form for an honest identity comparison.
+            # Use cd+pwd so we don't depend on GNU `readlink -f` (absent on macOS).
+            resolve_path() {
+                local target="$1" dir base
+                dir="$(cd "$(dirname "$target")" 2>/dev/null && pwd -P || true)"
+                base="$(basename "$target")"
+                if [ -n "$dir" ]; then
+                    printf '%s/%s\n' "$dir" "$base"
+                else
+                    printf '%s\n' "$target"
+                fi
+            }
+
+            local self_resolved hook_resolved
+            self_resolved="$(resolve_path "${BASH_SOURCE[0]}")"
+            hook_resolved="$(resolve_path "$repo_hook")"
+
+            if [ "$self_resolved" = "$hook_resolved" ]; then
+                # The repo-local hook IS this script. Skip to avoid recursion.
+                return 0
+            fi
+
+            # Hand off: same args, replay captured stdin, propagate exit code.
+            # `exec` replaces this process, so the repo hook's exit code becomes
+            # ours directly.
+            exec "$repo_hook" "$@" <<EOF
+$stdin_data
+EOF
+        fi
+    fi
+    # No repo-local hook to chain to.
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Step 2 (cont.) — If we are not inside a git repo, do not enforce anything.
+#                  Still chain to a repo-local hook if (somehow) present, then
+#                  allow. Fail soft.
+# ---------------------------------------------------------------------------
+if [ "$in_git_repo" -ne 1 ]; then
+    chain_to_repo_hook_then_allow "$@"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Step 3 — Determine opt-in (same three signals as pre-commit).
+# ---------------------------------------------------------------------------
+branch_tier_opted_in() {
+    if [ -n "$repo_root" ] && [ -e "$repo_root/.claude/branch-tier" ]; then
+        return 0
+    fi
+    if [ "${CLAUDE_BRANCH_TIER:-}" = "1" ]; then
+        return 0
+    fi
+    local cfg
+    cfg="$(git config --bool --get claude.branchTier 2>/dev/null || true)"
+    if [ "$cfg" = "true" ]; then
+        return 0
+    fi
+    return 1
+}
+
+if branch_tier_opted_in; then
+    # -----------------------------------------------------------------------
+    # Step 3a — Reject pushes that target a protected branch.
+    #
+    # We scan each stdin line and look at the THIRD field (<remote-ref>). If it
+    # equals refs/heads/<p> for any protected branch <p>, we reject. The
+    # protected set defaults to "main master", overridable via
+    # GIT_PROTECTED_BRANCHES (space-separated, bare branch names).
+    #
+    # We iterate over the captured stdin via a here-string so the original
+    # buffer remains intact for the chained hook below.
+    # -----------------------------------------------------------------------
+    protected_set="${GIT_PROTECTED_BRANCHES:-main master}"
+
+    while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+        # Skip blank lines (e.g. a trailing newline in the buffer).
+        [ -z "${remote_ref:-}" ] && continue
+
+        for p in $protected_set; do
+            if [ "$remote_ref" = "refs/heads/$p" ]; then
+                echo "pre-push (branch-tier): BLOCKED — push targets protected branch '$p' ($remote_ref)." >&2
+                echo "" >&2
+                echo "Protected branches ($protected_set) are reached only via a reviewed PR." >&2
+                echo "Push your tier branch (dev/feat/fix/chore/integration/*) and open a PR instead." >&2
+                exit 1
+            fi
+        done
+    done <<EOF
+$stdin_data
+EOF
+fi
+
+# ---------------------------------------------------------------------------
+# Step 4 — Chain to the repo-local pre-push hook (ALWAYS), replaying stdin.
+#          If it exists, this exec's and propagates its exit code. Otherwise the
+#          function returns and we allow the push.
+# ---------------------------------------------------------------------------
+chain_to_repo_hook_then_allow "$@"
+exit 0

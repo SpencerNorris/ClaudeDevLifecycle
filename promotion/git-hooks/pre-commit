@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+#
+# Global pre-commit hook — branch-tier autonomy + forbidden-tracker enforcement.
+#
+# WHERE THIS RUNS
+#   Installed globally via `git config --global core.hooksPath ~/.claude/git-hooks`,
+#   so this script executes for EVERY commit in EVERY repository on the machine.
+#   That reach is the whole point — but it also means a spurious non-zero exit
+#   here would block ALL commits everywhere. This script is therefore written to
+#   fail SOFT: any uncertainty (not a git repo, missing tooling, opt-in absent)
+#   resolves toward "allow the commit, then chain to the repo's own hook".
+#
+# WHAT IT DOES
+#   1. (ALWAYS) If we are not inside a git repo, exit 0 immediately.
+#   2. (OPT-IN ONLY) Enforce two branch-tier invariants:
+#        a. Reject staged forbidden tracker files (NEXT_STEPS.md, TODO.md, …) —
+#           these belong in GitHub Issues, not committed markdown.
+#        b. Reject commits made while a protected branch (main/master) is checked
+#           out — main is reached only via a reviewed PR, never a direct commit.
+#   3. (ALWAYS) Chain to the repo-local pre-commit hook if one exists, because a
+#      global core.hooksPath SHADOWS .git/hooks/* — without explicit chaining the
+#      repo's own linters/validators would be silently skipped.
+#
+# WHY OPT-IN (an intentional, documented deviation from the literal spec)
+#   The design spec (§8) describes these checks as always-on. Installing them
+#   GLOBALLY, however, would surprise-break every unrelated repo on the machine
+#   (e.g. a repo whose workflow legitimately commits a TODO.md, or that commits
+#   on main by design). To keep the global install safe, branch-tier enforcement
+#   is OPT-IN PER REPO. A repo opts in via ANY of:
+#       (a) a file ".claude/branch-tier" at the repo root, OR
+#       (b) env var CLAUDE_BRANCH_TIER=1, OR
+#       (c) git config claude.branchTier == true.
+#   If a repo has not opted in, this hook performs NO branch-tier checks and
+#   simply chains to the repo-local hook — i.e. it is transparent.
+#
+# ROBUSTNESS NOTES
+#   - `set -u` catches unset-variable bugs in this script. We deliberately do NOT
+#     use `set -e` or `set -o pipefail`: a non-zero status from a benign command
+#     (e.g. grep finding no matches, a `git` query in an odd state) must never be
+#     allowed to abort the script and spuriously fail the commit. Every exit code
+#     that matters is checked explicitly.
+#   - Exit 0 = allow commit. Exit non-zero = block commit (only on a real,
+#     intended rejection, or because a chained repo hook rejected).
+
+set -u
+
+# ---------------------------------------------------------------------------
+# Step 1 — If we are not inside a git repository, there is nothing to enforce.
+#          Exit 0 so we never interfere. (Should be impossible for a hook to run
+#          outside a repo, but we guard anyway — fail soft.)
+# ---------------------------------------------------------------------------
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve key paths up front (used by both enforcement and chaining).
+#   git_common_dir : the real .git directory (handles worktrees correctly);
+#                    repo-local hooks live under "$git_common_dir/hooks".
+#   repo_root      : top of the working tree; where ".claude/branch-tier" lives.
+# Both are computed defensively; on any failure we treat the value as empty and
+# fall back to safe behavior rather than aborting.
+# ---------------------------------------------------------------------------
+git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+
+# ---------------------------------------------------------------------------
+# Step 2 — Determine whether THIS repo has opted in to branch-tier enforcement.
+#          Opt-in via ANY of three independent signals (see header). Absent all
+#          three, we skip every branch-tier check below.
+# ---------------------------------------------------------------------------
+branch_tier_opted_in() {
+    # (a) marker file at the repo root.
+    if [ -n "$repo_root" ] && [ -e "$repo_root/.claude/branch-tier" ]; then
+        return 0
+    fi
+    # (b) environment variable.
+    if [ "${CLAUDE_BRANCH_TIER:-}" = "1" ]; then
+        return 0
+    fi
+    # (c) git config flag (per-repo or inherited). `--bool` normalizes truthy
+    #     values ("true"/"yes"/"1"/"on") to the literal string "true".
+    local cfg
+    cfg="$(git config --bool --get claude.branchTier 2>/dev/null || true)"
+    if [ "$cfg" = "true" ]; then
+        return 0
+    fi
+    return 1
+}
+
+if branch_tier_opted_in; then
+    # -----------------------------------------------------------------------
+    # Step 2a — Reject staged forbidden tracker files.
+    #
+    # These are ad-hoc markdown trackers that the process forbids: the single
+    # source of truth for cross-session tracking is GitHub Issues. We match on
+    # the case-insensitive BASENAME of each staged path, plus a couple of
+    # path-specific forms (docs/issues-to-file.md) that are meaningful by
+    # location.
+    #
+    # We inspect only files that are ADDED or MODIFIED in this commit
+    # (--diff-filter=ACM) among the staged set (--cached). Deletions are fine.
+    # -----------------------------------------------------------------------
+    staged_files="$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)"
+
+    if [ -n "$staged_files" ]; then
+        # Forbidden basename patterns (case-insensitive). Note PHASE_* covers
+        # PHASE_1.md, PHASE_2_BUGS.md, PHASE_3_FOLLOWUPS.md, etc.
+        # We test each staged file's lowercased basename against these globs.
+        forbidden_hit=""
+        while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            base="${f##*/}"
+            # Lowercase for case-insensitive comparison. Use tr (POSIX) rather
+            # than bash-4 ${var,,}: the shebang resolves to whatever bash is on
+            # PATH, which on stock macOS is /bin/bash 3.2 where ${var,,} is a
+            # fatal "bad substitution". Because we do not use `set -e`, that error
+            # would silently abort enforcement and fail OPEN. tr works on bash 3.2
+            # and 4+ alike, so enforcement can never silently disable itself.
+            lc_base="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+            lc_path="$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')"
+
+            case "$lc_base" in
+                next_steps.md|backlog.md|todo.md|review.md|\
+                issues_to_file.md|bugs.md|known_issues.md|\
+                phase_*.md)
+                    forbidden_hit="$f"
+                    ;;
+            esac
+
+            # Path-specific form: docs/issues-to-file.md (meaningful by location,
+            # not just basename). Match anywhere the path ends with it.
+            case "$lc_path" in
+                docs/issues-to-file.md|*/docs/issues-to-file.md)
+                    forbidden_hit="$f"
+                    ;;
+            esac
+
+            if [ -n "$forbidden_hit" ]; then
+                echo "pre-commit (branch-tier): BLOCKED — staged forbidden tracker file:" >&2
+                echo "    $forbidden_hit" >&2
+                echo "" >&2
+                echo "Ad-hoc markdown trackers are forbidden. Use a GitHub issue instead." >&2
+                echo "(Forbidden: NEXT_STEPS.md, BACKLOG.md, TODO.md, REVIEW.md, PHASE_*.md," >&2
+                echo " ISSUES_TO_FILE.md, docs/issues-to-file.md, BUGS.md, KNOWN_ISSUES.md.)" >&2
+                exit 1
+            fi
+        done <<EOF
+$staged_files
+EOF
+    fi
+
+    # -----------------------------------------------------------------------
+    # Step 2b — Reject commits while a protected branch is checked out.
+    #
+    # main/master are reached only through a reviewed PR; a direct commit on them
+    # violates the branch-tier invariant. The protected set defaults to
+    # "main master" and is overridable per-repo via GIT_PROTECTED_BRANCHES
+    # (space-separated).
+    #
+    # We use the symbolic branch name. On a detached HEAD there is no branch
+    # name, so this check is skipped (a detached-HEAD commit is not a commit
+    # "on main" in the sense we care about).
+    # -----------------------------------------------------------------------
+    current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [ -n "$current_branch" ]; then
+        protected_set="${GIT_PROTECTED_BRANCHES:-main master}"
+        for p in $protected_set; do
+            if [ "$current_branch" = "$p" ]; then
+                echo "pre-commit (branch-tier): BLOCKED — direct commit on protected branch '$current_branch'." >&2
+                echo "" >&2
+                echo "Protected branches ($protected_set) are reached only via a reviewed PR." >&2
+                echo "Create a tier branch (dev/feat/fix/chore/integration/*) and commit there." >&2
+                exit 1
+            fi
+        done
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 3 — Chain to the repo-local pre-commit hook (ALWAYS, opted-in or not).
+#
+# A global core.hooksPath SHADOWS .git/hooks/*, so a repo's own pre-commit would
+# otherwise never run. We restore it explicitly: if an executable repo-local
+# pre-commit exists, run it with the SAME arguments and the SAME stdin, and
+# propagate its exit code verbatim (its rejection must fail the commit).
+#
+# Self-recursion guard: if the repo-local hook path resolves to THIS very script
+# (e.g. a repo whose core.hooksPath points back here, or a symlink loop), we must
+# NOT invoke it — that would recurse forever. We compare resolved absolute paths.
+# ---------------------------------------------------------------------------
+if [ -n "$git_common_dir" ]; then
+    repo_hook="$git_common_dir/hooks/pre-commit"
+
+    if [ -f "$repo_hook" ] && [ -x "$repo_hook" ]; then
+        # Resolve both paths to absolute form for an honest identity comparison.
+        # `cd` into the dirname and use $PWD so this works without realpath/readlink
+        # being available on every platform (macOS lacks GNU readlink -f by default).
+        resolve_path() {
+            local target="$1" dir base
+            dir="$(cd "$(dirname "$target")" 2>/dev/null && pwd -P || true)"
+            base="$(basename "$target")"
+            if [ -n "$dir" ]; then
+                printf '%s/%s\n' "$dir" "$base"
+            else
+                printf '%s\n' "$target"
+            fi
+        }
+
+        self_resolved="$(resolve_path "${BASH_SOURCE[0]}")"
+        hook_resolved="$(resolve_path "$repo_hook")"
+
+        if [ "$self_resolved" = "$hook_resolved" ]; then
+            # The repo-local hook IS this script. Skip to avoid infinite recursion.
+            exit 0
+        fi
+
+        # Hand off: same args, same stdin (inherited), propagate exit code.
+        exec "$repo_hook" "$@"
+    fi
+fi
+
+# No repo-local hook (or no resolvable git dir): nothing left to do — allow.
+exit 0
