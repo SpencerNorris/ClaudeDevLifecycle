@@ -9,6 +9,10 @@ the exercise.
 This rule exists because the prior default — "all unit and integration
 tests pass" — has been observed to ship visibly broken features.
 
+The one-line stance — *not done until exercised against the running system with
+a transcript* — also lives in the constitution (`CLAUDE.md`). This file is the
+detail: smoke depth, the surface-by-type playbook, and the report contract.
+
 ## Required for every "done" report
 
 A change is "done" only when ALL of the following hold:
@@ -132,7 +136,7 @@ Every "done" report follows this structure:
 ## Re-validation after CI failure (delta report)
 
 When CI goes red after a push and the fix is committed locally
-(`local-ci-parity.md` covers why this happens despite local `act`),
+(`docs/references/local-ci-parity.md` covers why this happens despite local `act`),
 the code must be re-validated before the next push — `act` and the
 relevant smoke cases re-run against the fix. But the report does **not**
 restate the full DoD. It is a **delta**:

@@ -1,14 +1,15 @@
 # No-Shed Rule
 
 ## Purpose
-Stop using "filed as issue" as an escape hatch from finishing the
-current change. Bugs found while implementing a feature get fixed in
-the same change, not filed for later.
+The core stance — *fix bugs you find in the same change; filing is only for
+genuinely orthogonal scope* — lives in the constitution (`CLAUDE.md`). This file
+is the detail an agent needs when actually deciding fix-vs-file: the
+orthogonality tests, the rationalizations that don't count, and the escalation
+when the count gets high.
 
-The prior default — file liberally to declare done — has been observed
-to leave the codebase in worse shape after a feature lands than before.
-A feature plus 50 new issues is not a win; it is a debt rollup
-disguised as progress.
+Why it matters: filing liberally to declare done leaves the codebase in worse
+shape after a feature lands than before. A feature plus 50 new issues is a debt
+rollup disguised as progress, not a win.
 
 ## Default behavior
 

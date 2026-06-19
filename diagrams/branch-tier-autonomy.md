@@ -35,7 +35,8 @@ graph TB
 
     subgraph GLOBAL["Global config — ~/.claude/ · THE FOUR MECHANISMS"]
         HOOKS["git hooks — HOOKS (invariants)<br/>pre-commit: forbidden trackers + no-main<br/>pre-push: reject main/master ref"]
-        RULES["rules/*.md — RULES (judgment)<br/>~3 lean + 2 shrunk<br/>DoD · no-shed · branch-lifecycle"]
+        CONST["CLAUDE.md — CONSTITUTION (always-on)<br/>universal stances: DoD · no-shed · tracker<br/>(RULES mechanism · tier 1)"]
+        RULES["rules/*.md — TOPICAL RULES (on-demand)<br/>DoD detail · no-shed tests · branch-lifecycle<br/>(RULES mechanism · tier 2)"]
         AGENTS["agents/*.md — AGENTS (specialists)<br/>adversarial-reviewer (fixed prompt)"]
         WF["workflows/*.js — WORKFLOWS<br/>autonomous federated run<br/>(invokes reviewer; caps in code)"]
         SETT["settings.json — allow/deny<br/>tier allows: push non-main + merge<br/>main denies: push main, --force"]
@@ -58,7 +59,8 @@ graph TB
     U -->|"Gate A: authorize · Gate B: merge PR"| C
     HOOKS -.->|mechanically enforce| C
     SETT -.->|allow / deny| C
-    RULES -.->|guide| C
+    CONST -.->|always guides| C
+    RULES -.->|read when relevant| C
     AGENTS -.->|invoked by| C
     WF -.->|dispatched by| C
     MEM -.->|loaded into| C
@@ -87,10 +89,12 @@ graph TB
 **Reading notes**
 
 - The four mechanisms, by trust model: **hooks** make invariants un-bypassable
-  (zero context, always on); **rules** guide a thinking agent (small context,
-  human in loop); **agents** are fixed-prompt specialists invoked with fixed
-  inputs (zero context until invoked — the implementer can't game them);
-  **workflows** encode autonomous orchestration with caps/gates in code.
+  (zero context, always on); **rules** guide a thinking agent in two tiers — the
+  always-on *constitution* (`CLAUDE.md`) and the *topical files* (`rules/*.md`,
+  today auto-injected but targeted to load on-demand); **agents** are fixed-prompt
+  specialists invoked with fixed inputs (zero context until invoked — the
+  implementer can't game them); **workflows** encode autonomous orchestration
+  with caps/gates in code.
 - `settings.json` is the allow/deny layer that *works with* the pre-push hook to
   protect `main`; `memory/` is storage. Neither is one of the four mechanisms.
 - The user has two routine action arrows into the world: **Gate A** (authorize a

@@ -1,10 +1,15 @@
 # Local CI Parity
 
 ## Purpose
-Run the CI workflow locally before requesting a push. The prior
-default — push and iterate on CI failures — costs the user one push
-per fix, often dozens per feature. The first push should be
-expected-green.
+**Status: project-level reference, not a global rule (rev 3).** The surviving
+principle — *aim for an expected-green first push; a cheap local pre-check is
+worth it, but real CI is the gate* — lives in the constitution (`CLAUDE.md`).
+The `act` how-to below is project-specific: only projects with GitHub Actions
+need it, so it belongs in such a project's `docs/`, not as an always-on global
+rule loaded in every session of every project.
+
+The prior default — push and iterate on CI failures — costs one push per fix,
+often dozens per feature. This reference is how you avoid that where CI exists.
 
 ## Tool
 

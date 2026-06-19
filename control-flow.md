@@ -8,12 +8,15 @@ When ratified, the rule files promote to `~/.claude/rules/` and this document
 moves to `docs/claude-process.md` (or equivalent) as the master reference for
 how we work together.
 
-**Rev 3 (in progress):** `single-tracker.md` deleted and redistributed — the
-forbidden-filename *invariant* → the pre-commit hook; the *principle* → global
-`~/.claude/CLAUDE.md`; the resumption + docs-vs-tracking *practices* →
-`branch-lifecycle.md`. Spec sync is pending; the broader mechanism-model
-refinement (treating global `CLAUDE.md` as the always-on "constitution" tier
-above the topical `rules/*.md`) is under discussion, not yet applied to D1/§1.
+**Rev 3 (in progress):** the rules set is re-sorted by mechanism.
+`single-tracker.md` deleted (invariant → pre-commit hook; principle →
+constitution; practices → `branch-lifecycle.md`). `local-ci-parity.md` demoted
+from a global rule to project reference (`docs/references/`). `no-shed` thinned.
+The DoD / no-shed / tracker / CI principles are staged for the constitution
+(§15). The mechanism model now treats global `CLAUDE.md` as the always-on
+*constitution* tier above the on-demand *topical rules* (§1, D1). Spec sync (the
+rev-2 snapshot) is pending. **No global config touched — the constitution
+additions are staged in §15 only, applied at promotion.**
 
 **Diagram source of truth:** the mermaid blocks in
 `diagrams/branch-tier-autonomy.md`. The diagrams embedded here are copies for
@@ -43,13 +46,32 @@ Four mechanisms, each for a distinct kind of concern:
 | Mechanism | For | Session-context cost | Trust model |
 |---|---|---|---|
 | **Hooks** | Hard invariants | **zero** (always on) | mechanical — un-bypassable by a forgetful agent |
-| **Rules** | Judgment / discipline | small (loaded every session) — keep **lean** | guides a thinking agent (works with a human present) |
+| **Rules** | Judgment / discipline (two tiers — see below) | constitution always-on; topical files on-demand | guides a thinking agent (works with a human present) |
 | **Agents** | Fixed-prompt specialists | **zero until invoked** | invoked by an orchestrator with fixed inputs — implementer can't game them |
 | **Workflows** | Autonomous orchestration | **zero until dispatched** | deterministic control flow (caps, gates, fan-out) in code |
 
 **Principle:** safety-critical control (main protection, shim-catching, retry
 caps) lives in hooks / agents / workflows — **never** in rules. Rules are for
 the judgment a thinking agent applies when a human is in the loop.
+
+### The rules mechanism has two tiers
+
+The single "Rules" mechanism splits by *when it loads*:
+
+- **Constitution** — global (`~/.claude/CLAUDE.md`) + project (`<repo>/CLAUDE.md`).
+  Always loaded, every session. Holds the short, universal *stances* you never
+  want forgotten (the DoD principle, the no-shed principle, the single-tracker
+  principle). Because it is always-on, it must stay short.
+- **Topical rules** — `~/.claude/rules/*.md`. The substantial, procedural detail
+  for one concern (DoD's surface-by-type playbook, branch-lifecycle's cleanup
+  commands, no-shed's orthogonality tests). **Target loading: on-demand** — read
+  when the work touches them, so a session pays context only for relevant rules.
+
+> **Known gap (rev 3):** today the harness auto-injects *all* `~/.claude/rules/*.md`
+> every session, so the on-demand saving isn't realized yet. Making topical rules
+> genuinely on-demand (per `CLAUDE.md`'s own "read when relevant" intent) is the
+> one change that turns the shrink effort into real token savings. It is a
+> loading/config change applied at promotion, not a content change.
 
 ---
 
@@ -66,7 +88,8 @@ graph TB
 
     subgraph GLOBAL["Global config — ~/.claude/ · THE FOUR MECHANISMS"]
         HOOKS["git hooks — HOOKS (invariants)<br/>pre-commit: forbidden trackers + no-main<br/>pre-push: reject main/master ref"]
-        RULES["rules/*.md — RULES (judgment)<br/>~3 lean + 2 shrunk<br/>DoD · no-shed · branch-lifecycle"]
+        CONST["CLAUDE.md — CONSTITUTION (always-on)<br/>universal stances: DoD · no-shed · tracker<br/>(RULES mechanism · tier 1)"]
+        RULES["rules/*.md — TOPICAL RULES (on-demand)<br/>DoD detail · no-shed tests · branch-lifecycle<br/>(RULES mechanism · tier 2)"]
         AGENTS["agents/*.md — AGENTS (specialists)<br/>adversarial-reviewer (fixed prompt)"]
         WF["workflows/*.js — WORKFLOWS<br/>autonomous federated run<br/>(invokes reviewer; caps in code)"]
         SETT["settings.json — allow/deny<br/>tier allows: push non-main + merge<br/>main denies: push main, --force"]
@@ -89,7 +112,8 @@ graph TB
     U -->|"Gate A: authorize · Gate B: merge PR"| C
     HOOKS -.->|mechanically enforce| C
     SETT -.->|allow / deny| C
-    RULES -.->|guide| C
+    CONST -.->|always guides| C
+    RULES -.->|read when relevant| C
     AGENTS -.->|invoked by| C
     WF -.->|dispatched by| C
     MEM -.->|loaded into| C
@@ -118,10 +142,12 @@ graph TB
 **Reading notes**
 
 - The four mechanisms, by trust model: **hooks** make invariants un-bypassable
-  (zero context, always on); **rules** guide a thinking agent (small context,
-  human in loop); **agents** are fixed-prompt specialists invoked with fixed
-  inputs (zero context until invoked — the implementer can't game them);
-  **workflows** encode autonomous orchestration with caps/gates in code.
+  (zero context, always on); **rules** guide a thinking agent in two tiers — the
+  always-on *constitution* (`CLAUDE.md`) and the *topical files* (`rules/*.md`,
+  today auto-injected but targeted to load on-demand); **agents** are fixed-prompt
+  specialists invoked with fixed inputs (zero context until invoked — the
+  implementer can't game them); **workflows** encode autonomous orchestration
+  with caps/gates in code.
 - `settings.json` is the allow/deny layer that *works with* the pre-push hook to
   protect `main`; `memory/` is storage. Neither is one of the four mechanisms.
 - The user has two routine action arrows into the world: **Gate A** (authorize a
@@ -437,25 +463,24 @@ With mechanical concerns moved out, standing rules shrink to lean judgment:
 
 | Rule | Disposition | Notes |
 |---|---|---|
-| `definition-of-done.md` | **keep, lean** | What "done" means; the DoD report contract. Honesty is *also* enforced by the reviewer agent in autonomous mode. |
-| `no-shed.md` | **keep, lean** | The no-shim / no-bug-shed philosophy. The shim taxonomy is *also* the reviewer agent's checklist. |
+| `definition-of-done.md` | **keep, lean** | What "done" means; the DoD report contract. Stance elevated to the constitution; honesty is *also* enforced by the reviewer agent in autonomous mode. |
+| `no-shed.md` | **keep, thin** | Principle elevated to the constitution; file keeps the orthogonality tests + the 5+-filings escalation. The shim taxonomy is *also* the reviewer agent's checklist. |
 | `branch-lifecycle.md` | **keep, lean** | + the two-tier model; absorbs the cross-session resume anchor + docs-vs-tracking razor from the retired `single-tracker.md`. |
-| `local-ci-parity.md` | **shrink** | `act` demoted to optional pre-check; expected-green still before the `dev→main` PR. |
-| `single-tracker.md` | **deleted — redistributed** | Invariant → pre-commit hook; principle → global `CLAUDE.md`; practices → `branch-lifecycle.md`. |
+| `local-ci-parity.md` | **demoted — project reference** | Moved to `docs/references/`; principle elevated to the constitution; the `act` how-to is project-specific (only where GitHub Actions exists). |
+| `single-tracker.md` | **deleted — redistributed** | Invariant → pre-commit hook; principle → constitution; practices → `branch-lifecycle.md`. |
 
 **Not created** (category errors): `workflow-dispatch.md` (folds into Gate-A +
 workflow code), `adversarial-review.md` (it is the reviewer agent + a workflow
 stage).
 
-**Net: 3 lean rules (`definition-of-done`, `no-shed`, `branch-lifecycle`) + 1
-shrunk (`local-ci-parity`), instead of 7; `single-tracker` is deleted and its
-concerns redistributed by mechanism. Per-session context goes down.**
+**Net: 3 global rule files (`definition-of-done`, `no-shed`, `branch-lifecycle`),
+down from 7. `single-tracker` deleted, `local-ci-parity` demoted to project
+reference, and the load-bearing *principles* elevated to the always-on
+constitution. Per-session topical context drops — fully realized once topical
+rules load on-demand (see §1).**
 
-**Promoted to the constitution:** the single-tracker *principle* lands in global
-`~/.claude/CLAUDE.md` at promotion, as:
-> GitHub Issues is the only persistent cross-session tracker — file bugs,
-> features, and follow-ups as issues, never as ad-hoc markdown. Generate status
-> snapshots on demand from the source of truth; never hand-maintain them.
+**Constitution additions** (every elevated principle-line, staged for promotion —
+**not applied to any live config**): see §15.
 
 ---
 
@@ -491,7 +516,7 @@ Where each rule fires in the control flow:
 | `definition-of-done.md` | DoD report (D2) + reviewer agent (autonomous) + Gate B (interactive) | Report structure required; reviewer agent verifies honesty; user verifies at merge |
 | `no-shed.md` | Bug-discovered decision (D2) + reviewer agent checklist | Default-fix; orthogonal exception requires GH issue; reviewer catches shims |
 | `branch-lifecycle.md` | Branch creation + cleanup (D2) | Naming convention at creation; mandatory delete at close |
-| `local-ci-parity.md` | Optional pre-check (D2) | `act` invocation optional; real CI is the gate |
+| local-CI-parity *(project ref)* | Optional pre-check (D2) | `act` how-to now in project `docs/references/`; the expected-green principle in the constitution; real CI is the gate |
 | forbidden-tracker invariant | pre-commit hook (commit time) | Forbidden filenames blocked at commit; principle in global `CLAUDE.md`; resume + docs-vs-tracking practices in `branch-lifecycle.md` |
 
 ---
@@ -541,6 +566,51 @@ These were open questions during drafting; each is now decided.
 
 14. **Plan approval short-circuit** (rev 2) — Plan approval defaults to user
     review. Can be pre-authorized at Gate A for autonomous runs.
+
+15. **Three-tier judgment layer** (rev 3) — the "Rules" mechanism splits into
+    the always-on *constitution* (`CLAUDE.md`, global + project) and the
+    *topical rules* (`rules/*.md`, on-demand target). Constitution holds short
+    universal stances; topical files hold procedural detail.
+
+16. **On-demand topical rules** (rev 3) — `rules/*.md` should load on-demand
+    (read when relevant), not be auto-injected every session. This is what turns
+    the shrink into real token savings; it is a loading/config change applied at
+    promotion, not a content change. (Today the harness auto-injects them — the
+    known gap.)
+
+17. **Rule sort** (rev 3) — `single-tracker` deleted, `local-ci-parity` demoted
+    to project reference (`docs/references/`), `no-shed` thinned, principles
+    elevated to the constitution. Net 3 global rule files.
+
+---
+
+## 15 — Constitution — staged for promotion
+
+These are the principle-lines to add to the **always-on constitution** at
+promotion. They are **staged here only — not applied to any live config.** The
+*global* lines go to `~/.claude/CLAUDE.md` (under "Global defaults"); copy them
+in when the rules promote, with the user's explicit go-ahead.
+
+**Definition of Done (principle):**
+> A change is not done until it has been exercised against the running system
+> and a smoke-test transcript is in the report. Passing unit/integration tests
+> is necessary, not sufficient. (Detail: `rules/definition-of-done.md`.)
+
+**No-shed (principle):**
+> Bugs found while implementing get fixed in the same change. Filing as an issue
+> is only for genuinely orthogonal scope, or explicit user deferral — never an
+> escape hatch to declare done. (Detail: `rules/no-shed.md`.)
+
+**Single tracker (principle):**
+> GitHub Issues is the only persistent cross-session tracker — file bugs,
+> features, and follow-ups as issues, never as ad-hoc markdown. Generate status
+> snapshots on demand from the source of truth; never hand-maintain them.
+> (Resume / lifecycle detail: `rules/branch-lifecycle.md`.)
+
+**Local-CI parity (principle):**
+> Aim for an expected-green first push; a cheap local pre-check (`act`) is worth
+> it where CI exists, but real CI is the gate. (Project how-to:
+> `docs/references/local-ci-parity.md`.)
 
 ---
 
