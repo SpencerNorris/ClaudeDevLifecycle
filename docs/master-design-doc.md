@@ -169,8 +169,9 @@ graph TB
 
 ## 3 — Branch tiers
 
-- **`main` — protected.** Never pushed/merged/committed-to directly; reached
-  only via a PR the user merges.
+- **`main` — protected** (by design; enforcement is layered and opt-in per repo —
+  see §10). Never pushed/merged/committed-to directly; reached only via a PR the
+  user merges.
 - **All non-`main` — Claude's sandbox** (`dev/feat/fix/chore/integration/*`):
   create, commit, push, merge-between, open PRs autonomously.
 - **Invariant:** *nothing reaches `main` without the user's explicit PR merge.*
@@ -437,17 +438,28 @@ flowchart TD
 
 ---
 
-## 10 — Enforcement of `main` protection (three layers)
+## 10 — Enforcement of `main` protection (layered; pick what your repo/plan allows)
 
-1. **GitHub branch protection on `main`** (server-side, the real guarantee):
-   require PR + ≥1 approval; block direct/force pushes. One-time admin setup.
-2. **Global `pre-push` hook**: rejects any push whose remote ref is
-   `main`/`master`, in any command form. Closes the bare-`git push` gap. Chains
-   to the repo-local pre-push hook (global `core.hooksPath` shadows it
-   otherwise).
-3. **Global `settings.json`**: allow `git push` for tier branches
-   (`dev/*`, `feat/*`, `fix/*`, `chore/*`, `integration/*`); deny `git push
-   origin main`, `--force`, `-f`; pre-commit guard against committing on `main`.
+Complementary layers, not redundant — use as many as apply. Only the server-side
+layer is truly unbypassable; the local layers prevent **accidental** pushes to
+`main` (a deliberate `git push --no-verify` or an unset `core.hooksPath` gets past
+them).
+
+1. **GitHub server-side branch protection on `main`** — the only *unbypassable*
+   layer (GitHub enforces it, not your machine): require PR + ≥1 approval; block
+   direct/force pushes. The strongest guarantee **where your plan offers it** —
+   protected branches on *private* repos require a paid GitHub plan. Set it
+   wherever you can; one-time admin setup per repo.
+2. **Global `pre-push` hook** (opted-in repos): rejects any push whose remote ref
+   is `main`/`master`, in any command form — so it closes the bare-`git push` gap.
+   **Where server-side protection isn't available, this is your primary
+   `main`-protection.** Chains to the repo-local pre-push hook (global
+   `core.hooksPath` shadows it otherwise).
+3. **Global `settings.json`** (defense-in-depth): allow `git push` for tier
+   branches (`dev/*`, `feat/*`, `fix/*`, `chore/*`, `integration/*`); deny `git
+   push origin main`, `--force`, `-f`; pre-commit guard against committing on
+   `main`. Can't catch a bare `git push` (the matcher sees the command text, not
+   the branch) — that's layer 2's job.
 
 ### Hooks (intended logic)
 

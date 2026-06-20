@@ -115,9 +115,12 @@ noise or would clobber live state:
    Only then do the hooks block direct commits/pushes to `main` and forbidden
    tracker files in that repo.
 
-6. **Set GitHub branch protection on `main`** (the real, server-side guarantee —
-   the local hooks are a convenience layer): require a PR + ≥1 approval, block
-   direct/force pushes. One-time, per repo, in the GitHub UI.
+6. **Set GitHub branch protection on `main`** where your plan allows it — the only
+   *unbypassable* layer (require a PR + ≥1 approval, block direct/force pushes;
+   one-time, per repo, in the GitHub UI). Note: protected branches on *private*
+   repos need a paid GitHub plan. **Where it isn't available, the opted-in local
+   hooks (step 5) are your `main`-protection** — they stop accidental pushes to
+   `main`, though a deliberate `--no-verify` bypasses them.
 
 ---
 

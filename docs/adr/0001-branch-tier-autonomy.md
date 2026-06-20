@@ -77,8 +77,9 @@ Supporting decisions:
 
 ## Consequences
 - **Easier:** autonomous multi-feature runs become safe (the reviewer agent is
-  the autonomous skeptic); `main` is protected by three layers (branch
-  protection, hook, settings); the standing rule set is smaller, so per-session
+  the autonomous skeptic); `main` is protected by up to three layers (server-side
+  branch protection where the plan allows, plus the local hook + settings); the
+  standing rule set is smaller, so per-session
   context drops as the process rules move to on-demand reference.
 - **Harder:** more moving parts spread across four mechanisms — a contributor
   must know which mechanism owns a concern; the federated workflow and reviewer

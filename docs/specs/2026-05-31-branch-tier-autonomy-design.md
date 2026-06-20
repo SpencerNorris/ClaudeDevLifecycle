@@ -81,8 +81,9 @@ its *interactive* execution is the main loop. One discipline, two executions.
 
 ## 3. Branch tiers
 
-- **`main` — protected.** Never pushed/merged/committed-to directly; reached
-  only via a PR the user merges.
+- **`main` — protected** (by design; enforcement is layered and opt-in per repo —
+  see §8). Never pushed/merged/committed-to directly; reached only via a PR the
+  user merges.
 - **All non-`main` — Claude's sandbox** (`dev/feat/fix/chore/integration/*`):
   create, commit, push, merge-between, open PRs autonomously.
 - **Invariant:** *nothing reaches `main` without the user's explicit PR merge.*
@@ -153,15 +154,20 @@ own homework.**
   resume: the human investigates, fixes or directs, and re-authorizes via a
   new Gate A.
 
-## 8. Enforcement of `main` protection (three layers)
+## 8. Enforcement of `main` protection (layered; pick what your repo/plan allows)
 
-1. **GitHub branch protection on `main`** (server-side, the real guarantee):
-   require PR + ≥1 approval; block direct/force pushes. One-time admin setup.
-2. **Global `pre-push` hook**: rejects any push whose remote ref is
-   `main`/`master`, in any command form. Closes the bare-`git push` gap.
-3. **Global `settings.json`**: allow `git push origin <tier>/*` + `git merge`;
-   deny `git push origin main`, `--force`, `-f`; pre-commit guard against
-   committing on `main`. Standing denies migrate from project-local to global.
+Complementary layers — only the server-side one is unbypassable; the local layers
+stop **accidental** pushes to `main`, not a deliberate `--no-verify`.
+
+1. **GitHub server-side branch protection on `main`** — the only *unbypassable*
+   layer: require PR + ≥1 approval; block direct/force pushes. Strongest **where
+   the plan offers it** (protected branches on private repos need a paid plan).
+2. **Global `pre-push` hook** (opted-in repos): rejects any push whose remote ref
+   is `main`/`master`, in any command form — closes the bare-`git push` gap.
+   **Where server-side protection is unavailable, this is the primary guard.**
+3. **Global `settings.json`** (defense-in-depth): allow `git push origin <tier>/*`
+   + `git merge`; deny `git push origin main`, `--force`, `-f`; pre-commit guard
+   against committing on `main`. Can't catch a bare `git push`; that's layer 2.
 
 ### Hooks (intended logic; chaining to be finalized in the build)
 
