@@ -1,6 +1,6 @@
 ---
 name: bootstrap-permissions
-description: Use when entering a new project for the first time (no .claude/settings.local.json exists), or when the user asks to set up Claude Code permissions / allow-list for a project. Detects the project's stack from manifest files and proposes a permission allow-list covering standard test/lint/build/git commands, deliberately leaving destructive commands unapproved.
+description: Use when entering a new project for the first time (no .claude/settings.local.json exists), or when the user asks to set up Claude Code permissions / allow-list for a project. Detects the project's stack from manifest files and proposes a permission allow-list covering standard test/lint/build/git commands, deliberately leaving destructive commands unapproved. Also opts the repo into branch-tier main-protection (the per-repo hook activation) so `main` is guarded from the first session.
 ---
 
 # Bootstrap Permissions Skill
@@ -8,8 +8,9 @@ description: Use when entering a new project for the first time (no .claude/sett
 ## Purpose
 
 Stop the "Claude waited all night for permission approval" failure mode on
-new projects. Detects the stack, proposes an allow-list, and writes
-`.claude/settings.local.json` after user confirmation.
+new projects, and set up `main`-protection in one shot. Detects the stack,
+proposes an allow-list and writes `.claude/settings.local.json`, then opts the
+repo into branch-tier enforcement — all after user confirmation.
 
 ## When to invoke
 
@@ -382,6 +383,44 @@ After the user confirms:
 3. Remind the user that the new permissions load on next Claude Code restart,
    or with `/permissions reload` if available in their version.
 
+## Step 7 — Opt the repo into branch-tier main-protection
+
+The global `pre-commit`/`pre-push` hooks (in `~/.claude/git-hooks`) are **opt-in
+per repo** — they do nothing until this repo opts in. For a project you'll do real
+Claude-driven development in, set this up as part of the bootstrap so `main` is
+guarded from the first session. Only do this inside a git repo (`.git` present);
+skip silently otherwise.
+
+Propose it, then on confirmation:
+
+1. **Create the opt-in marker** at the repo root:
+   ```bash
+   mkdir -p .claude && touch .claude/branch-tier
+   ```
+   This activates the hooks here: direct commits and pushes to `main`/`master` are
+   blocked (reach `main` via a reviewed PR), and forbidden tracker files
+   (`NEXT_STEPS.md`, `BACKLOG.md`, …) are rejected. (Alternatives, if preferred:
+   `git config claude.branchTier true`, or `export CLAUDE_BRANCH_TIER=1`.)
+
+2. **Commit the marker — do NOT gitignore it.** Unlike `settings.local.json`, this
+   is a shared policy flag: committing it makes the opt-in travel with the repo so
+   anyone who clones inherits the protection.
+
+3. **Set GitHub server-side branch protection if available** — the only
+   *unbypassable* guarantee. If the repo has a GitHub remote and `gh` is
+   authenticated, offer to run:
+   ```bash
+   gh api --method PUT repos/{owner}/{repo}/branches/main/protection --input - <<'JSON'
+   { "required_pull_request_reviews": {"required_approving_review_count": 1},
+     "required_status_checks": null, "enforce_admins": true, "restrictions": null }
+   JSON
+   ```
+   If it fails because the plan doesn't offer protected branches on private repos
+   (common on free/pro), say so plainly: **the local hooks are then the actual
+   main-protection, so the opt-in in step 1 is essential, not optional.** Be honest
+   that the hooks stop *accidental* pushes to `main` but are not adversary-proof —
+   a deliberate `git push --no-verify` or an unset `core.hooksPath` bypasses them.
+
 ## Key principles
 
 - **Permissive for the reversible, strict for the destructive.** The prompt
@@ -405,7 +444,8 @@ After the user confirms:
 - Does not modify a shared `.claude/settings.json` without explicit request.
 - Does not edit `.claude/agents/*.md` tool scopes — that's the job of the
   `build-team` skill or manual edit.
-- Does not install hooks — hooks are a separate concern; mention them only if
-  the user asks.
+- Does not install the global git hooks themselves — those live in
+  `~/.claude/git-hooks` from the main install. It only sets the per-repo *opt-in
+  marker* that activates them (Step 7).
 - Does not alter `~/.claude/settings.json` (user-global). Permissions are
   per-project.

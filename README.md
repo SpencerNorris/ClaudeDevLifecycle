@@ -42,6 +42,28 @@ hooks/             bootstrap-check.sh (SessionStart).
 skills/            bootstrap-permissions.
 ```
 
+## Activating it in a repo (opt-in)
+
+Branch-tier enforcement is **opt-in per repo** — the global hooks do nothing until
+a repo opts in, so installing the config can't surprise-break your other repos. In
+a repo where you want `main` guarded:
+
+```
+mkdir -p .claude && touch .claude/branch-tier   # commit this marker to share the opt-in
+```
+
+That activates the `pre-commit`/`pre-push` hooks there: direct commits and pushes
+to `main`/`master` are blocked (reach `main` via a reviewed PR) and forbidden
+tracker files are rejected. (Alternatives: `git config claude.branchTier true`, or
+`export CLAUDE_BRANCH_TIER=1`.)
+
+GitHub **server-side branch protection** is the only *unbypassable* guarantee — set
+it on `main` where your plan allows. Where it doesn't (e.g. private repos on free
+plans), **these local hooks are your main-protection**, so opting in is the
+load-bearing step, not a nicety — they stop *accidental* pushes to `main` (a
+deliberate `--no-verify` still bypasses them). The `bootstrap-permissions` skill
+sets all of this up in one shot on a new project.
+
 ## `docs/specs/` vs `docs/references/`
 
 - **`docs/specs/`** — design *intent*, pre-build: what we intend to build and why.
