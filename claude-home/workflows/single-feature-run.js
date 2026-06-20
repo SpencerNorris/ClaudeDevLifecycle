@@ -2,15 +2,15 @@
  * single-feature-run.js — the autonomous single-feature dev cycle (D2 as a workflow).
  *
  * WHAT THIS IS
- *   The control-flow document's per-task discipline ("D2") has two execution
- *   modes (control-flow.md §5). In INTERACTIVE mode a human is the skeptic and
+ *   The master design document's per-task discipline ("D2") has two execution
+ *   modes (master-design-doc.md §5). In INTERACTIVE mode a human is the skeptic and
  *   the main loop holds the conversation. In AUTONOMOUS mode the same discipline
  *   is encoded HERE, as a workflow: the adversarial-reviewer AGENT is the skeptic
- *   (a mandatory stage — control-flow.md §8, spec §5), and every retry loop is
- *   capped + escalated in code (control-flow.md §9, spec §7). This file is the
+ *   (a mandatory stage — master-design-doc.md §8, spec §5), and every retry loop is
+ *   capped + escalated in code (master-design-doc.md §9, spec §7). This file is the
  *   AUTONOMOUS execution of D2 for a single feature, dispatched after Gate A.
  *
- * THE FLOW (control-flow.md §5 diagram, autonomous portion)
+ * THE FLOW (master-design-doc.md §5 diagram, autonomous portion)
  *   Gate A has already happened in the main loop (authorize: scope, budget,
  *   target dev branch, GH issue scaffolding). This workflow runs the interior:
  *
@@ -34,7 +34,7 @@
  *   Gate B (the human merging the dev->main PR) happens AFTER this workflow
  *   returns — it is a human touchpoint, not a workflow step.
  *
- * THE CIRCUIT BREAKER (control-flow.md §9, spec §7) — load-bearing, non-bypassable.
+ * THE CIRCUIT BREAKER (master-design-doc.md §9, spec §7) — load-bearing, non-bypassable.
  *   Every retry loop is COUNTER-controlled with a hard cap K = 3. The counter is
  *   workflow code, not agent discretion: an agent cannot vote to loop again. On
  *   exhaustion we do NOT loop and do NOT shim. We:
@@ -82,7 +82,7 @@ export const meta = {
 };
 
 // ---------------------------------------------------------------------------
-// Constants. K is the hard retry cap from control-flow.md §9 / spec §7. It caps
+// Constants. K is the hard retry cap from master-design-doc.md §9 / spec §7. It caps
 // EVERY loop in this file. Changing this changes the breaker for all phases.
 // ---------------------------------------------------------------------------
 const K = 3;
@@ -93,7 +93,7 @@ const NEEDS_HUMAN_LABEL = "needs-human";
 // so the control flow branches on data, not on free-text the agent could fudge.
 // ---------------------------------------------------------------------------
 
-// The adversarial-reviewer's verdict (control-flow.md §8, spec §5). `findings`
+// The adversarial-reviewer's verdict (master-design-doc.md §8, spec §5). `findings`
 // enumerate the specific refutations (weakened tests, try/except pass, hardcoded
 // returns, cast-to-None, narrowed assertions, unaddressed root cause, missing
 // named edges, dishonest DoD claims). On reject they become retry context.
@@ -232,7 +232,7 @@ class EscalationStop extends Error {
 }
 
 /**
- * escalate — the circuit breaker's terminal action (control-flow.md §9, spec §7).
+ * escalate — the circuit breaker's terminal action (master-design-doc.md §9, spec §7).
  *
  * Runs a root-cause diagnosis, then dispatches an agent to post a structured
  * summary comment to the feature's GitHub issue (what failed, attempts made,
@@ -256,7 +256,7 @@ async function escalate(stage, attempts, context) {
 
   const diagnosis = await agent(
     "A capped retry loop in the autonomous single-feature run has been exhausted. " +
-      "Do a root-cause diagnosis (control-flow.md §9 / spec §7): why did '" +
+      "Do a root-cause diagnosis (master-design-doc.md §9 / spec §7): why did '" +
       stage +
       "' fail after " +
       attempts +
@@ -278,7 +278,7 @@ async function escalate(stage, attempts, context) {
   );
 
   await agent(
-    "Escalate this exhausted autonomous run to the human (control-flow.md §9 / spec §7). " +
+    "Escalate this exhausted autonomous run to the human (master-design-doc.md §9 / spec §7). " +
       "Using the GitHub MCP server, post a structured comment to the feature issue and add the '" +
       NEEDS_HUMAN_LABEL +
       "' label. Do NOT push, merge, or modify code. Leave the branch and PR in place.\n\n" +
@@ -321,7 +321,7 @@ async function escalate(stage, attempts, context) {
 // MAIN FLOW
 // ===========================================================================
 
-// Gate A inputs (control-flow.md §4). These come from the main loop that
+// Gate A inputs (master-design-doc.md §4). These come from the main loop that
 // dispatched this workflow; the workflow does not re-authorize.
 const featureDescription = args.featureDescription || args.feature || args.issue;
 const devBranch = args.devBranch || args.branch;
@@ -370,7 +370,7 @@ const ctx = {
 //
 // These three phases form ONE capped outer loop: a reviewer reject and a
 // validation failure BOTH send control back to implementation, and both share
-// the single K-cap as required by the diagram (control-flow.md §5: HG/JG/REV all
+// the single K-cap as required by the diagram (master-design-doc.md §5: HG/JG/REV all
 // loop back to E, "every loop capped at K"). We count every trip back to
 // implementation. We never re-enter without spending an attempt; the counter is
 // the only thing that decides whether we loop, never an agent.
@@ -380,13 +380,13 @@ phase("Implement");
 
 // Branch creation + first TDD pass. Plan handling per Gate A (§4): pre-approved
 // short-circuits planning; otherwise the agent drafts a plan for non-trivial
-// surfaces (trivial tasks skip planning, control-flow.md §14.1).
+// surfaces (trivial tasks skip planning, master-design-doc.md §14.1).
 const planClause = preApprovedPlan
   ? "A plan was pre-approved at Gate A; follow it:\n" + preApprovedPlan + "\n"
-  : "No plan was pre-approved. If the surface is non-trivial (anything beyond a <=10-line, single-file, no-behavior-change edit per control-flow.md §14.1), draft a short plan first, then implement it.\n";
+  : "No plan was pre-approved. If the surface is non-trivial (anything beyond a <=10-line, single-file, no-behavior-change edit per master-design-doc.md §14.1), draft a short plan first, then implement it.\n";
 
 let implementResult = await agent(
-  "AUTONOMOUS single-feature run, IMPLEMENT phase (control-flow.md §5, D2).\n" +
+  "AUTONOMOUS single-feature run, IMPLEMENT phase (master-design-doc.md §5, D2).\n" +
     "Create a NON-MAIN branch off '" +
     devBranch +
     "' named per branch-lifecycle conventions (dev/feat/fix/chore/...). NEVER touch main. " +
@@ -421,7 +421,7 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
   // ---- PHASE 2: VALIDATE + DoD report -----------------------------------
   phase("Validate");
   const dod = await agent(
-    "AUTONOMOUS single-feature run, VALIDATE phase (control-flow.md §5, D2; reference/definition-of-done.md).\n" +
+    "AUTONOMOUS single-feature run, VALIDATE phase (master-design-doc.md §5, D2; reference/definition-of-done.md).\n" +
       "On branch '" +
       ctx.branch +
       "', run the full validation: unit + integration + regression + lint + type-check. " +
@@ -456,7 +456,7 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
 
     // Hand the failure back to the implementer and spend the next attempt.
     implementResult = await agent(
-      "AUTONOMOUS run, back to IMPLEMENT after a VALIDATE failure (control-flow.md §5). " +
+      "AUTONOMOUS run, back to IMPLEMENT after a VALIDATE failure (master-design-doc.md §5). " +
         "Fix the root cause — do NOT weaken tests, skip cases, or shim. Keep TDD discipline.\n\n" +
         "Branch: " +
         ctx.branch +
@@ -478,7 +478,7 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
   // ---- PHASE 3: ADVERSARIAL REVIEW (the mandatory skeptic) --------------
   phase("Review");
   const verdict = await agent(
-    "AUTONOMOUS single-feature run, REVIEW phase (control-flow.md §8, spec §5). " +
+    "AUTONOMOUS single-feature run, REVIEW phase (master-design-doc.md §8, spec §5). " +
       "You are the adversarial reviewer. Refute-first: try to PROVE this change is not actually done. " +
       "Hunt for skipped or weakened tests, try/except pass, hardcoded returns, cast-to-None, narrowed assertions, " +
       "unaddressed root cause, missing named edge cases, and dishonest DoD claims (does the report match the real test output?). " +
@@ -526,7 +526,7 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
     }
 
     implementResult = await agent(
-      "AUTONOMOUS run, back to IMPLEMENT after an ADVERSARIAL-REVIEW reject (control-flow.md §8). " +
+      "AUTONOMOUS run, back to IMPLEMENT after an ADVERSARIAL-REVIEW reject (master-design-doc.md §8). " +
         "Address every blocking finding by fixing the ROOT CAUSE. Do NOT weaken tests or shim to satisfy the reviewer.\n\n" +
         "Branch: " +
         ctx.branch +
@@ -566,7 +566,7 @@ if (!reviewed || !dodReport) {
 // ---------------------------------------------------------------------------
 phase("Ship");
 const ship = await agent(
-  "AUTONOMOUS single-feature run, SHIP phase (control-flow.md §5, D2). " +
+  "AUTONOMOUS single-feature run, SHIP phase (master-design-doc.md §5, D2). " +
     "Push the NON-MAIN branch '" +
     ctx.branch +
     "' to origin (the pre-push hook + settings allow tier branches; main is forbidden). " +
@@ -611,7 +611,7 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
   let terminal = false;
   for (let poll = 1; poll <= pollBudget && !terminal; poll++) {
     ci = await agent(
-      "AUTONOMOUS single-feature run, CI phase (control-flow.md §5, D2). " +
+      "AUTONOMOUS single-feature run, CI phase (master-design-doc.md §5, D2). " +
         "Check the GitHub Actions status for PR " +
         ctx.prUrl +
         " (branch '" +
@@ -661,7 +661,7 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
   }
 
   await agent(
-    "AUTONOMOUS run, CI-RED fix (control-flow.md §5; reference/definition-of-done.md CI-red delta). " +
+    "AUTONOMOUS run, CI-RED fix (master-design-doc.md §5; reference/definition-of-done.md CI-red delta). " +
       "On branch '" +
       ctx.branch +
       "', read the failing CI logs, fix the ROOT CAUSE (no shim, no weakened test, no skipped check), " +

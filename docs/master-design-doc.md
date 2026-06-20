@@ -1,25 +1,24 @@
-# Development Control Flow — rev 2
+# Development Control Flow — rev 3
 
 ## Status
-Revision 2, with rev-3 changes in progress. Was synced with
-`specs/2026-05-31-branch-tier-autonomy-design.md` (rev 2) and
-`diagrams/branch-tier-autonomy.md`. Lives in this directory for iteration.
-When ratified, the rule files promote to `~/.claude/rules/` and this document
-moves to `docs/claude-process.md` (or equivalent) as the master reference for
-how we work together.
+Revision 3. Synced with
+`docs/specs/2026-05-31-branch-tier-autonomy-design.md` (rev 3) and
+`docs/diagrams/branch-tier-autonomy.md`. This document lives in `docs/` as the
+master reference for how we work together; the deployable config it describes is
+staged in `claude-home/` for drop-in to `~/.claude` (see `INSTALL.md`).
 
-**Rev 3 (in progress):** the rules set is re-sorted by mechanism.
+**Rev 3:** the rules set is re-sorted by mechanism.
 `single-tracker.md` deleted (invariant → pre-commit hook; principle →
 constitution; practices → `branch-lifecycle.md`). `local-ci-parity.md` demoted
 from a global rule to project reference (`docs/references/`). `no-shed` thinned.
 The DoD / no-shed / tracker / CI principles are staged for the constitution
-(§15). The mechanism model now treats global `CLAUDE.md` as the always-on
-*constitution* tier above the on-demand *topical rules* (§1, D1). The rev-2 spec
-is now brought to rev 3 to match. **No global config touched — the constitution
+(§15). The mechanism model now treats the global `CLAUDE.md` as the always-on
+*constitution* above two on-demand buckets — path-scoped `rules/` and
+concept-triggered `reference/` (§1, D1). The spec is at rev 3 to match. **No global config touched — the constitution
 additions are staged in §15 only, applied at promotion.**
 
 **Diagram source of truth:** the mermaid blocks in
-`diagrams/branch-tier-autonomy.md`. The diagrams embedded here are copies for
+`docs/diagrams/branch-tier-autonomy.md`. The diagrams embedded here are copies for
 readability. If they ever disagree, the diagrams file wins.
 
 ## Purpose
@@ -46,7 +45,7 @@ Four mechanisms, each for a distinct kind of concern:
 | Mechanism | For | Session-context cost | Trust model |
 |---|---|---|---|
 | **Hooks** | Hard invariants | **zero** (always on) | mechanical — un-bypassable by a forgetful agent |
-| **Rules** | Judgment / discipline (two tiers — see below) | constitution always-on; topical files on-demand | guides a thinking agent (works with a human present) |
+| **Rules** | Judgment / discipline (three buckets — see below) | constitution always-on; `rules/` on file-touch; `reference/` on-demand | guides a thinking agent (works with a human present) |
 | **Agents** | Fixed-prompt specialists | **zero until invoked** | invoked by an orchestrator with fixed inputs — implementer can't game them |
 | **Workflows** | Autonomous orchestration | **zero until dispatched** | deterministic control flow (caps, gates, fan-out) in code |
 
@@ -54,25 +53,33 @@ Four mechanisms, each for a distinct kind of concern:
 caps) lives in hooks / agents / workflows — **never** in rules. Rules are for
 the judgment a thinking agent applies when a human is in the loop.
 
-### The rules mechanism has two tiers
+### The rules mechanism has three buckets
 
-The single "Rules" mechanism splits by *when it loads*:
+The single "Rules" mechanism splits by *when its content enters context*:
 
 - **Constitution** — global (`~/.claude/CLAUDE.md`) + project (`<repo>/CLAUDE.md`).
   Always loaded, every session. Holds the short, universal *stances* you never
   want forgotten (the DoD principle, the no-shed principle, the single-tracker
   principle). Because it is always-on, it must stay short.
-- **Topical rules** — `~/.claude/rules/*.md`. The substantial, procedural detail
-  for one concern (DoD's surface-by-type playbook, branch-lifecycle's cleanup
-  commands, no-shed's orthogonality tests). **Target loading: on-demand** — read
-  when the work touches them, so a session pays context only for relevant rules.
+- **Path-scoped rules** — `~/.claude/rules/*.md` *with* `paths:` frontmatter.
+  Claude Code auto-loads these, but only when the session touches a file matching
+  the glob. For guidance tied to a **file type**: `code-style.md` (source globs),
+  `adr-format.md` (`docs/adr/**`).
+- **On-demand reference** — `~/.claude/reference/*.md`. A plain folder Claude Code
+  does *not* auto-load; the constitution carries an index, and Claude opens the
+  file with the Read tool when its **conceptual** trigger matches ("before
+  non-trivial work", "when writing tests"). For procedural detail whose trigger is
+  the *kind of work*, not a file path: DoD's surface-by-type playbook, no-shed's
+  orthogonality tests, branch-lifecycle's cleanup commands, plus the process rules
+  (testing, documentation, workflow, workflow-autonomy, architecture).
 
-> **Known gap (rev 3):** Claude Code auto-loads every `~/.claude/rules/*.md` that
-> lacks `paths:` frontmatter at session start (same priority as `CLAUDE.md`), so
-> the on-demand saving isn't realized yet. The fix is native: add `paths:` glob
-> frontmatter (file-type rules), or keep a lean constitution index + Read the
-> file on demand (process rules). A global-config change applied at promotion,
-> not a content change.
+> **Why two on-demand buckets?** Because the *trigger type* differs. A rule that
+> fires on a file path (`code-style` when you edit source) uses native `paths:`
+> frontmatter and lives in `rules/`. A rule whose trigger is conceptual ("before
+> declaring done") has no glob to match — put it in `rules/` without `paths:` and
+> it auto-loads on *every* session, re-bloating context. So it lives in the plain
+> `reference/` folder and is pulled in by judgment via the constitution's index.
+> This resolves the rev-3 "auto-load everything" gap natively.
 
 ---
 
@@ -89,8 +96,9 @@ graph TB
 
     subgraph GLOBAL["Global config — ~/.claude/ · THE FOUR MECHANISMS"]
         HOOKS["git hooks — HOOKS (invariants)<br/>pre-commit: forbidden trackers + no-main<br/>pre-push: reject main/master ref"]
-        CONST["CLAUDE.md — CONSTITUTION (always-on)<br/>universal stances: DoD · no-shed · tracker<br/>(RULES mechanism · tier 1)"]
-        RULES["rules/*.md — TOPICAL RULES (on-demand)<br/>DoD detail · no-shed tests · branch-lifecycle<br/>(RULES mechanism · tier 2)"]
+        CONST["CLAUDE.md — CONSTITUTION (always-on)<br/>universal stances: DoD · no-shed · tracker<br/>(RULES mechanism · bucket 1)"]
+        RULES["rules/*.md — PATH-SCOPED RULES<br/>code-style · adr-format (paths: frontmatter)<br/>(RULES mechanism · bucket 2 · auto-load on matching file)"]
+        REF["reference/*.md — ON-DEMAND REFERENCE<br/>DoD detail · no-shed · branch-lifecycle · testing · …<br/>(RULES mechanism · bucket 3 · read via CLAUDE.md index)"]
         AGENTS["agents/*.md — AGENTS (specialists)<br/>adversarial-reviewer (fixed prompt)"]
         WF["workflows/*.js — WORKFLOWS<br/>autonomous federated run<br/>(invokes reviewer; caps in code)"]
         SETT["settings.json — allow/deny<br/>tier allows: push non-main + merge<br/>main denies: push main, --force"]
@@ -114,7 +122,8 @@ graph TB
     HOOKS -.->|mechanically enforce| C
     SETT -.->|allow / deny| C
     CONST -.->|always guides| C
-    RULES -.->|read when relevant| C
+    RULES -.->|auto-load on matching file| C
+    REF -.->|read on-demand via index| C
     AGENTS -.->|invoked by| C
     WF -.->|dispatched by| C
     MEM -.->|loaded into| C
@@ -143,9 +152,10 @@ graph TB
 **Reading notes**
 
 - The four mechanisms, by trust model: **hooks** make invariants un-bypassable
-  (zero context, always on); **rules** guide a thinking agent in two tiers — the
-  always-on *constitution* (`CLAUDE.md`) and the *topical files* (`rules/*.md`,
-  today auto-injected but targeted to load on-demand); **agents** are fixed-prompt
+  (zero context, always on); **rules** guide a thinking agent in three buckets —
+  the always-on *constitution* (`CLAUDE.md`), the path-scoped *rules* (`rules/*.md`
+  with `paths:` frontmatter, auto-loaded on a matching file), and the on-demand
+  *reference* (`reference/*.md`, read via the constitution index); **agents** are fixed-prompt
   specialists invoked with fixed inputs (zero context until invoked — the
   implementer can't game them); **workflows** encode autonomous orchestration
   with caps/gates in code.
@@ -466,7 +476,7 @@ With mechanical concerns moved out, standing rules shrink to lean judgment:
 |---|---|---|
 | `definition-of-done.md` | **keep, lean** | What "done" means; the DoD report contract. Stance elevated to the constitution; honesty is *also* enforced by the reviewer agent in autonomous mode. |
 | `no-shed.md` | **keep, thin** | Principle elevated to the constitution; file keeps the orthogonality tests + the 5+-filings escalation. The shim taxonomy is *also* the reviewer agent's checklist. |
-| `branch-lifecycle.md` | **keep, lean** | + the two-tier model; absorbs the cross-session resume anchor + docs-vs-tracking razor from the retired `single-tracker.md`. |
+| `branch-lifecycle.md` | **keep, lean** | + the three-bucket model; absorbs the cross-session resume anchor + docs-vs-tracking razor from the retired `single-tracker.md`. |
 | `local-ci-parity.md` | **demoted — project reference** | Moved to `docs/references/`; principle elevated to the constitution; the `act` how-to is project-specific (only where GitHub Actions exists). |
 | `single-tracker.md` | **deleted — redistributed** | Invariant → pre-commit hook; principle → constitution; practices → `branch-lifecycle.md`. |
 
@@ -474,11 +484,13 @@ With mechanical concerns moved out, standing rules shrink to lean judgment:
 workflow code), `adversarial-review.md` (it is the reviewer agent + a workflow
 stage).
 
-**Net: 3 global rule files (`definition-of-done`, `no-shed`, `branch-lifecycle`),
-down from 7. `single-tracker` deleted, `local-ci-parity` demoted to project
-reference, and the load-bearing *principles* elevated to the always-on
-constitution. Per-session topical context drops — fully realized once topical
-rules load on-demand (see §1).**
+**Net of the rev-3 sort: 3 surviving design rules (`definition-of-done`, `no-shed`,
+`branch-lifecycle`), down from 7. `single-tracker` deleted, `local-ci-parity`
+demoted to project reference, and the load-bearing *principles* elevated to the
+always-on constitution. In the deliverable these land in `reference/` alongside
+the carried-over process rules; the file-type rules (`code-style`, `adr-format`)
+stay path-scoped in `rules/`. Per-session context drops — realized by the bucket
+split: `reference/` loads on-demand (see §1).**
 
 **Constitution additions** (every elevated principle-line, staged for promotion —
 **not applied to any live config**): see §15.
@@ -568,20 +580,22 @@ These were open questions during drafting; each is now decided.
 14. **Plan approval short-circuit** (rev 2) — Plan approval defaults to user
     review. Can be pre-authorized at Gate A for autonomous runs.
 
-15. **Three-tier judgment layer** (rev 3) — the "Rules" mechanism splits into
-    the always-on *constitution* (`CLAUDE.md`, global + project) and the
-    *topical rules* (`rules/*.md`, on-demand target). Constitution holds short
-    universal stances; topical files hold procedural detail.
+15. **Three-bucket judgment layer** (rev 3) — the "Rules" mechanism splits into
+    the always-on *constitution* (`CLAUDE.md`, global + project), the path-scoped
+    *rules* (`rules/*.md` + `paths:` frontmatter, auto-load on matching files),
+    and the on-demand *reference* (`reference/*.md`, read via the constitution
+    index). Constitution holds short stances; rules/reference hold procedural detail.
 
-16. **On-demand topical rules** (rev 3) — `rules/*.md` should load on-demand
-    (read when relevant), not be auto-injected every session. This is what turns
-    the shrink into real token savings; it is a loading/config change applied at
-    promotion, not a content change. (Today the harness auto-injects them — the
-    known gap.)
+16. **On-demand loading** (rev 3) — process rules must not be auto-injected every
+    session. Resolved by the bucket split: file-type rules use native `paths:`
+    frontmatter in `rules/`; concept-triggered rules live in the plain `reference/`
+    folder (not auto-loaded) and are read via the constitution index. This is what
+    turns the shrink into real token savings.
 
 17. **Rule sort** (rev 3) — `single-tracker` deleted, `local-ci-parity` demoted
     to project reference (`docs/references/`), `no-shed` thinned, principles
-    elevated to the constitution. Net 3 global rule files.
+    elevated to the constitution. Survivors sorted into `rules/` (path-scoped:
+    code-style, adr-format) and `reference/` (on-demand process rules).
 
 ---
 
