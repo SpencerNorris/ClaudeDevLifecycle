@@ -449,11 +449,28 @@ log(
 
 // ---- PHASES 1+2: Fan-out + per-feature Review (concurrent, barrier) --------
 // parallel() is the barrier: Integrate needs ALL reviewed-green features at once
-// (serial merges onto one shared dev branch; one batch PR). A thrown thunk would
-// become null, but processFeature does not throw for per-feature failures — it
-// returns an `escalated` marker — so every entry is a status object.
+// (serial merges onto one shared dev branch; one batch PR). processFeature does
+// not throw for EXPECTED per-feature failures — it returns an `escalated` marker.
+// But an UNEXPECTED throw (e.g. an agent() call rejecting on a terminal API error)
+// would become a null and be silently dropped by .filter(Boolean) — the feature
+// would vanish from the batch with no record, violating "never silently drop work;
+// always escalate". So we wrap each thunk: any uncaught throw becomes an explicit
+// escalated+errored outcome, so the feature is still surfaced to the human.
 const outcomes = (
-  await parallel(features.map((feature) => () => processFeature(feature, devBranch)))
+  await parallel(
+    features.map((feature) => async () => {
+      try {
+        return await processFeature(feature, devBranch);
+      } catch (err) {
+        const reason =
+          "processFeature threw (uncaught — a terminal error, not a normal " +
+          "per-feature escalation): " +
+          (err && err.message ? err.message : String(err));
+        log("FEATURE ERRORED (uncaught throw): " + feature.id + " — " + reason);
+        return { feature, branch: null, escalated: true, errored: true, reason: reason };
+      }
+    })
+  )
 ).filter(Boolean);
 
 const green = outcomes.filter((o) => o && !o.escalated);

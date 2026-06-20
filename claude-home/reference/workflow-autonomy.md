@@ -33,24 +33,18 @@ selection, sub-agent design, parallelism, and graceful exit when blocked.
   the repo in a consistent state.
 
 ## Model tier selection
-- **Default to Sonnet** for almost all work: orchestration, implementation,
-  planning, code review, security audit, debugging with reasonable signal.
-- **Escalate to Opus per-task, not as a standing tier**, when the task is
-  visibly reasoning-heavy and Sonnet's output would be thin:
-  - novel algorithm design
-  - genuinely ambiguous architecture calls
-  - complex debugging with sparse signal
-  - state-machine or distributed-system reasoning
-- **Do not assign Opus as the default `model:` in any agent frontmatter.** Opus
-  is a per-dispatch escalation via the `model` argument on `Agent`. If an
-  agent's work is consistently reasoning-heavy, dispatch it with Opus per call
-  rather than baking Opus into the agent definition.
-- **Haiku** stays for pattern-follow work: test writing, adapter boilerplate,
-  migration files, CLI scaffolding, formulaic refactors.
-- Rationale: Opus is ~5x the token cost and, as of early 2026, user reports of
-  performance regressions make "Opus by default" no longer an obvious win. The
-  tier discipline adapts naturally if Opus quality rebounds — just relax the
-  escalation bar.
+- **Default to Opus** for most work: orchestration, implementation, planning,
+  design, code review, security audit, debugging — anything that exercises real
+  judgment. Tokens are not the constraint here; quality is.
+- **Drop to Sonnet for mechanical work** where Opus is overkill and the output
+  wouldn't differ: formulaic refactors, boilerplate, straightforward edits with
+  clear signal, bulk find-and-replace, routine test scaffolding.
+- **Haiku** stays for the highest-volume pattern-following work: adapter
+  boilerplate, migration files, CLI scaffolding, simple fixtures.
+- Tier is a per-task choice. Sub-agents inherit the session model (Opus) by
+  default — pin a cheaper `model:` in frontmatter only for an agent whose work is
+  consistently mechanical. When a task tagged "mechanical" turns out to need
+  judgment, move it back up to Opus rather than pushing through on the cheap tier.
 
 ## Sub-agent tool scopes
 - Every implementation sub-agent's frontmatter `tools:` must include at
@@ -132,8 +126,8 @@ scaffolding), then checkpoint on it.
   - Confirm `.claude/settings.local.json` is populated for this project.
   - Confirm every dispatched sub-agent has the required tools.
   - Commit the plan document into git so branch state is durable.
-  - Ensure the main-thread model is Sonnet, not Opus, unless the overnight
-    task genuinely requires Opus reasoning throughout.
+  - Pick the main-thread tier for the run's character: Opus by default for
+    reasoning-heavy work; Sonnet only if the run is almost entirely mechanical.
 - Sub-agents dispatched for overnight runs must have explicit instructions to
   commit at task boundaries and post an issue checkpoint (above) on any blocker.
 - Prefer dispatching discrete chunks of work via background sub-agents rather
