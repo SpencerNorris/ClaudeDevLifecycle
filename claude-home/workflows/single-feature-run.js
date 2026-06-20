@@ -481,15 +481,33 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
     "AUTONOMOUS single-feature run, REVIEW phase (master-design-doc.md §8, spec §5). " +
       "You are the adversarial reviewer. Refute-first: try to PROVE this change is not actually done. " +
       "Hunt for skipped or weakened tests, try/except pass, hardcoded returns, cast-to-None, narrowed assertions, " +
-      "unaddressed root cause, missing named edge cases, and dishonest DoD claims (does the report match the real test output?). " +
-      "Inputs are the diff on the branch, the DoD report, and the test output below. " +
-      "Return verdict 'pass' only if you cannot substantiate a blocking finding; otherwise 'reject' with specific findings. " +
-      "On pass, also return a `verdictSection` (markdown) to append to the DoD report.\n\n" +
-      "Branch (diff source): " +
+      "unaddressed root cause, missing named edge cases, and dishonest DoD claims.\n\n" +
+      "DERIVE GROUND TRUTH YOURSELF — do not trust the report's self-stated results:\n" +
+      "  1. Reconstruct the real diff with `git diff " +
+      devBranch +
+      "...HEAD` on branch '" +
       ctx.branch +
-      "\nFiles touched: " +
-      (implementResult.filesTouched || []).join(", ") +
-      "\n\nDoD report:\n" +
+      "'; review the REAL diff, not any self-reported file list.\n" +
+      "  2. Re-run the suite yourself (unit/integration/regression/lint/type-check) and the smoke steps, and " +
+      "COMPARE your observed output to the CLAIMED results below. Any mismatch is a `dishonest-dod` blocking finding.\n\n" +
+      "Return verdict 'pass' only if you INDEPENDENTLY reproduced green AND found no blocking finding; otherwise 'reject' with specific findings. " +
+      "On pass, also return a `verdictSection` (markdown, stating WHAT you re-ran) to append to the DoD report.\n\n" +
+      "Branch under review: " +
+      ctx.branch +
+      "  (base: " +
+      devBranch +
+      ")\nCLAIMED test output (the report's self-stated results — verify, do not trust):\n" +
+      "  unit: " +
+      dod.tests.unit +
+      "\n  integration: " +
+      dod.tests.integration +
+      "\n  regression: " +
+      dod.tests.regression +
+      "\n  lint: " +
+      dod.tests.lint +
+      "\n  typecheck: " +
+      dod.tests.typecheck +
+      "\n\nCLAIMED DoD report:\n" +
       dod.report,
     {
       label: "adversarial-review",
