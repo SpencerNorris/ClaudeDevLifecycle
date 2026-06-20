@@ -66,7 +66,7 @@ a session pays context only for the guidance the work actually touches.
 - `testing.md` — testing expectations.
 - `workflow.md` — implementation workflow + output expectations.
 - `workflow-autonomy.md` — long-running / overnight sessions: fail-soft, commit at
-  task boundaries, model-tier selection, sub-agent tool scopes, the `NEXT_STEPS.md` format.
+  task boundaries, model-tier selection, sub-agent tool scopes, the issue-checkpoint format.
 
 Before non-trivial work, read the reference file whose trigger matches the change.
 
