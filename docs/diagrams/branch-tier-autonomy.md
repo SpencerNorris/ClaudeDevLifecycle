@@ -1,14 +1,14 @@
-# Branch-Tier Autonomy + Mechanism Model — Diagrams (rev 2)
+# Branch-Tier Autonomy + Mechanism Model — Diagrams (rev 3)
 
 - **Date:** 2026-06-09 (reconstructed after canvas loss)
 - **Source of truth:** these mermaid blocks. The Excalidraw canvas is a
   *rendering* of these, not the master. **If they ever disagree, this file
   wins.** (A laptop restart wiped the canvas on 2026-06-09; the canvas-only
   diagrams were lost. Never again — the text lives here.)
-- **Spec:** `ClaudeDevCycle/specs/2026-05-31-branch-tier-autonomy-design.md` (rev 2).
+- **Spec:** `ClaudeDevCycle/docs/specs/2026-05-31-branch-tier-autonomy-design.md` (rev 3).
   Diagram intent: spec §13. These four diagrams supersede the rev-1 diagrams
-  still embedded in `ClaudeDevCycle/control-flow.md` (whose surrounding prose is also
-  stale and is queued for a rev-2 sync).
+  still embedded in `ClaudeDevCycle/docs/control-flow.md`, which is now synced to
+  rev 3.
 
 Colour legend (consistent across all four):
 

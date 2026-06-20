@@ -1,25 +1,24 @@
-# Development Control Flow — rev 2
+# Development Control Flow — rev 3
 
 ## Status
-Revision 2, with rev-3 changes in progress. Was synced with
-`specs/2026-05-31-branch-tier-autonomy-design.md` (rev 2) and
-`diagrams/branch-tier-autonomy.md`. Lives in this directory for iteration.
-When ratified, the rule files promote to `~/.claude/rules/` and this document
-moves to `docs/claude-process.md` (or equivalent) as the master reference for
-how we work together.
+Revision 3. Synced with
+`docs/specs/2026-05-31-branch-tier-autonomy-design.md` (rev 3) and
+`docs/diagrams/branch-tier-autonomy.md`. This document lives in `docs/` as the
+master reference for how we work together; the deployable config it describes is
+staged in `claude-home/` for drop-in to `~/.claude` (see `INSTALL.md`).
 
-**Rev 3 (in progress):** the rules set is re-sorted by mechanism.
+**Rev 3:** the rules set is re-sorted by mechanism.
 `single-tracker.md` deleted (invariant → pre-commit hook; principle →
 constitution; practices → `branch-lifecycle.md`). `local-ci-parity.md` demoted
 from a global rule to project reference (`docs/references/`). `no-shed` thinned.
 The DoD / no-shed / tracker / CI principles are staged for the constitution
 (§15). The mechanism model now treats global `CLAUDE.md` as the always-on
-*constitution* tier above the on-demand *topical rules* (§1, D1). The rev-2 spec
-is now brought to rev 3 to match. **No global config touched — the constitution
+*constitution* tier above the on-demand *topical rules* (§1, D1). The spec is at
+rev 3 to match. **No global config touched — the constitution
 additions are staged in §15 only, applied at promotion.**
 
 **Diagram source of truth:** the mermaid blocks in
-`diagrams/branch-tier-autonomy.md`. The diagrams embedded here are copies for
+`docs/diagrams/branch-tier-autonomy.md`. The diagrams embedded here are copies for
 readability. If they ever disagree, the diagrams file wins.
 
 ## Purpose

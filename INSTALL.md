@@ -1,10 +1,10 @@
-# promotion/ — drop-in for `~/.claude`
+# Installing `claude-home/` into `~/.claude`
 
-This folder is a **staged, reviewable copy** of the global Claude Code config we
-designed in `ClaudeDevCycle` (see `../control-flow.md` and `../specs/`). It mirrors
-the `~/.claude/` layout so it can be dropped in cleanly. **Nothing here has touched
-your live `~/.claude`** — applying it is a deliberate manual step you take after
-reviewing the diff.
+The `claude-home/` folder is a **staged, reviewable copy** of the global Claude
+Code config we designed in `ClaudeDevCycle` (see `docs/control-flow.md` and
+`docs/specs/`). It mirrors the `~/.claude/` layout so it can be dropped in cleanly.
+**Nothing in it has touched your live `~/.claude`** — applying it is a deliberate
+manual step you take after reviewing the diff.
 
 Everything was built and adversarially verified, then hand-tested (the git hooks
 were executed in throwaway repos under macOS `/bin/bash` 3.2 — 19/19 cases pass).
@@ -14,7 +14,7 @@ were executed in throwaway repos under macOS `/bin/bash` 3.2 — 19/19 cases pas
 ## What's in here
 
 ```
-promotion/
+claude-home/
   CLAUDE.md                      # constitution: your existing CLAUDE.md + the principle-lines + the load index  (OVERWRITES ~/.claude/CLAUDE.md)
   settings.json                  # your existing settings + branch-tier permissions  (OVERWRITES ~/.claude/settings.json)
   rules/                         # PATH-SCOPED rules (auto-load only on matching files)
@@ -34,9 +34,11 @@ promotion/
     bootstrap-check.sh           # your existing SessionStart hook (carried forward unchanged)
   skills/
     bootstrap-permissions/SKILL.md   # your existing skill (carried forward unchanged)
-  docs/adr/
-    0001-branch-tier-autonomy.md # the ADR recording this decision
 ```
+
+(The ADR that records this decision is repo documentation, not part of the
+payload — it lives at `docs/adr/0001-branch-tier-autonomy.md` and does **not**
+ship into `~/.claude`.)
 
 ## What was deliberately EXCLUDED from `~/.claude` (and why)
 
@@ -66,8 +68,8 @@ noise or would clobber live state:
 2. **Review the two OVERWRITES** — `CLAUDE.md` and `settings.json` are built from
    YOUR current ones plus additions, so a copy replaces them. Diff before applying:
    ```bash
-   diff ~/.claude/CLAUDE.md     promotion/CLAUDE.md
-   diff ~/.claude/settings.json promotion/settings.json
+   diff ~/.claude/CLAUDE.md     claude-home/CLAUDE.md
+   diff ~/.claude/settings.json claude-home/settings.json
    ```
    `settings.json` keeps every existing key and only ADDS a `permissions` block.
    `CLAUDE.md` keeps your existing text and adds the constitution principle-lines,
@@ -76,16 +78,15 @@ noise or would clobber live state:
 3. **Copy the folder contents into `~/.claude`** (merge; the excluded dirs above
    are simply not present here, so they're left alone):
    ```bash
-   cp -a promotion/CLAUDE.md      ~/.claude/CLAUDE.md
-   cp -a promotion/settings.json  ~/.claude/settings.json
-   cp -a promotion/rules/.        ~/.claude/rules/   # path-scoped (replaces code-style/adr-format with frontmatter'd versions)
-   cp -a promotion/reference      ~/.claude/         # NEW dir: on-demand process rules
-   cp -a promotion/agents         ~/.claude/         # NEW dir
-   cp -a promotion/workflows      ~/.claude/         # NEW dir
-   cp -a promotion/git-hooks      ~/.claude/         # NEW dir
-   cp -a promotion/docs           ~/.claude/         # ADR
-   cp -a promotion/hooks/bootstrap-check.sh                 ~/.claude/hooks/bootstrap-check.sh
-   cp -a promotion/skills/bootstrap-permissions            ~/.claude/skills/
+   cp -a claude-home/CLAUDE.md      ~/.claude/CLAUDE.md
+   cp -a claude-home/settings.json  ~/.claude/settings.json
+   cp -a claude-home/rules/.        ~/.claude/rules/   # path-scoped (replaces code-style/adr-format with frontmatter'd versions)
+   cp -a claude-home/reference      ~/.claude/         # NEW dir: on-demand process rules
+   cp -a claude-home/agents         ~/.claude/         # NEW dir
+   cp -a claude-home/workflows      ~/.claude/         # NEW dir
+   cp -a claude-home/git-hooks      ~/.claude/         # NEW dir
+   cp -a claude-home/hooks/bootstrap-check.sh                 ~/.claude/hooks/bootstrap-check.sh
+   cp -a claude-home/skills/bootstrap-permissions            ~/.claude/skills/
    chmod +x ~/.claude/git-hooks/pre-commit ~/.claude/git-hooks/pre-push
    ```
    Note: your existing `~/.claude/rules/{code-style,adr-format}.md` will be replaced

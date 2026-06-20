@@ -87,7 +87,7 @@ Supporting decisions:
   applied at promotion, not yet realized.
 
 ## Notes
-- Control flow and mechanism diagrams: `../../../control-flow.md`.
+- Control flow and mechanism diagrams: `../control-flow.md`.
 - Design rationale and verification plan:
-  `../../../specs/2026-05-31-branch-tier-autonomy-design.md`.
-- Constitution principle-lines staged for promotion: `../../../control-flow.md` §15.
+  `../specs/2026-05-31-branch-tier-autonomy-design.md`.
+- Constitution principle-lines staged for promotion: `../control-flow.md` §15.
