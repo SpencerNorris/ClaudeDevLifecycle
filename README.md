@@ -20,7 +20,7 @@ README.md                          This file.
 INSTALL.md                         Runbook: how to deploy claude-home/ into ~/.claude.
 claude-home/                       THE DELIVERABLE — drops into ~/.claude (see below).
 docs/                              DOCUMENTATION about the deliverable:
-  control-flow.md                    Master process doc — the four-mechanism model,
+  master-design-doc.md                    Master process doc — the four-mechanism model,
                                      branch tiers, the two human gates. Start here.
   diagrams/branch-tier-autonomy.md   Mermaid source of truth for diagrams D1–D4.
   specs/                             Design specs — intent, pre-build: what & why.
@@ -51,6 +51,6 @@ Specs are the blueprint; references are the manual.
 
 ## Where to look next
 
-- Understand the design → `docs/control-flow.md`, then `docs/specs/`.
+- Understand the design → `docs/master-design-doc.md`, then `docs/specs/`.
 - See the diagrams → `docs/diagrams/branch-tier-autonomy.md`.
 - Deploy the config → `INSTALL.md`.

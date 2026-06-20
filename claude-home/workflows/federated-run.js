@@ -2,7 +2,7 @@
  * federated-run.js — the autonomous federated multi-feature run (D4).
  *
  * WHAT THIS IS
- *   ONE Claude workflow (control-flow.md §7, diagram D4). Given a feature list and
+ *   ONE Claude workflow (master-design-doc.md §7, diagram D4). Given a feature list and
  *   a target dev branch, it fans out one worktree-isolated agent PER feature that
  *   runs the D2 CORE (TDD implement -> validate -> DoD report), gates EACH feature
  *   with the adversarial-reviewer AGENT before it merges onto dev, integrates the
@@ -13,7 +13,7 @@
  *   of D2 (implement -> validate -> DoD -> review) run CONCURRENTLY — not N full
  *   D2s. The push / PR / CI / Gate-B tail runs ONCE for the whole batch.
  *
- * THE CIRCUIT BREAKER (control-flow.md §9, spec §7) — load-bearing, non-bypassable.
+ * THE CIRCUIT BREAKER (master-design-doc.md §9, spec §7) — load-bearing, non-bypassable.
  *   Every retry loop is COUNTER-controlled with a hard cap K = 3. The counter is
  *   workflow code, not agent discretion. On exhaustion we diagnose the root cause
  *   and post a structured escalation to the relevant GitHub issue + a needs-human
@@ -53,7 +53,7 @@ export const meta = {
 };
 
 // ---------------------------------------------------------------------------
-// Constants. K is the hard retry cap (control-flow.md §9 / spec §7); it bounds
+// Constants. K is the hard retry cap (master-design-doc.md §9 / spec §7); it bounds
 // EVERY loop here. NEEDS_HUMAN_LABEL is the escalation label.
 // ---------------------------------------------------------------------------
 const K = 3;
@@ -65,7 +65,7 @@ const NEEDS_HUMAN_LABEL = "needs-human";
 // mirror single-feature-run.js (one shared contract across both workflows).
 // ---------------------------------------------------------------------------
 
-// The adversarial-reviewer's verdict (control-flow.md §8, spec §5).
+// The adversarial-reviewer's verdict (master-design-doc.md §8, spec §5).
 const VERDICT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -190,7 +190,7 @@ class EscalationStop extends Error {
 }
 
 /**
- * postEscalation — the circuit breaker's terminal ACTION (control-flow.md §9,
+ * postEscalation — the circuit breaker's terminal ACTION (master-design-doc.md §9,
  * spec §7). Runs a root-cause diagnosis, then posts a structured comment to the
  * relevant GitHub issue and adds the needs-human label. It does NOT throw — the
  * caller decides whether the failure is per-feature (continue the batch) or
@@ -214,7 +214,7 @@ async function postEscalation(stage, attempts, ctx, label) {
 
   const diagnosis = await agent(
     "A capped retry loop in the autonomous federated run has been exhausted. " +
-      "Do a root-cause diagnosis (control-flow.md §9 / spec §7): why did '" +
+      "Do a root-cause diagnosis (master-design-doc.md §9 / spec §7): why did '" +
       stage +
       "' fail after " +
       attempts +
@@ -232,7 +232,7 @@ async function postEscalation(stage, attempts, ctx, label) {
   );
 
   await agent(
-    "Escalate this exhausted autonomous run to the human (control-flow.md §9 / spec §7). " +
+    "Escalate this exhausted autonomous run to the human (master-design-doc.md §9 / spec §7). " +
       "Using the GitHub MCP server, post a structured comment to the relevant issue and add the '" +
       NEEDS_HUMAN_LABEL +
       "' label. Do NOT push, merge, or modify code. Leave the branch and PR in place.\n\n" +
@@ -353,7 +353,7 @@ async function processFeature(feature, devBranch) {
     const verdict = await agent(
       "AUTONOMOUS federated run, REVIEW for feature '" +
         feature.title +
-        "' (control-flow.md §8, spec §5). You are the adversarial reviewer. Refute-first: try to PROVE this " +
+        "' (master-design-doc.md §8, spec §5). You are the adversarial reviewer. Refute-first: try to PROVE this " +
         "feature is not actually done. Hunt for skipped/weakened tests, try/except pass, hardcoded returns, " +
         "cast-to-None, narrowed assertions, unaddressed root cause, missing named edge cases, and dishonest DoD " +
         "claims (does the report match the real test output?). Inputs are the diff on the branch, the DoD report, " +
@@ -485,7 +485,7 @@ const integrationManifest = green
   .join("\n");
 
 await agent(
-  "AUTONOMOUS federated run, INTEGRATE phase (control-flow.md §7). Merge each reviewed-green feature branch " +
+  "AUTONOMOUS federated run, INTEGRATE phase (master-design-doc.md §7). Merge each reviewed-green feature branch " +
     "onto the shared dev branch '" +
     devBranch +
     "', one merge per feature, in order. Resolve any merge conflicts FAITHFULLY — never by discarding a " +
@@ -503,7 +503,7 @@ const combinedReports = green
   .join("\n\n---\n\n");
 
 const ship = await agent(
-  "AUTONOMOUS federated run, SHIP phase (control-flow.md §7). Push the NON-MAIN dev branch '" +
+  "AUTONOMOUS federated run, SHIP phase (master-design-doc.md §7). Push the NON-MAIN dev branch '" +
     devBranch +
     "' (never push main — the pre-push hook + settings forbid it) and open exactly ONE dev->main pull request " +
     "via the GitHub MCP server. The PR body MUST aggregate ALL the reviewed-green features' DoD reports (each " +

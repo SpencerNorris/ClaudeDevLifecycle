@@ -1,7 +1,7 @@
 # Installing `claude-home/` into `~/.claude`
 
 The `claude-home/` folder is a **staged, reviewable copy** of the global Claude
-Code config we designed in `ClaudeDevCycle` (see `docs/control-flow.md` and
+Code config we designed in `ClaudeDevCycle` (see `docs/master-design-doc.md` and
 `docs/specs/`). It mirrors the `~/.claude/` layout so it can be dropped in cleanly.
 **Nothing in it has touched your live `~/.claude`** — applying it is a deliberate
 manual step you take after reviewing the diff.

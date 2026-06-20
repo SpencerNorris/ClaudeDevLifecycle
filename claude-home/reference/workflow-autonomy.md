@@ -10,8 +10,11 @@ selection, sub-agent design, parallelism, and graceful exit when blocked.
   as a signal to checkpoint — not a signal to wait.
 - Before exiting:
   1. Commit any durable work to the current branch.
-  2. Write `NEXT_STEPS.md` at the repo root (format below). If one already
-     exists, update it — do not overwrite existing unresolved notes.
+  2. Post a checkpoint comment on the work's GitHub issue (format below) — the
+     issue is the single cross-session tracker (per the constitution's
+     single-tracker principle and `branch-lifecycle.md`). Never write a
+     `NEXT_STEPS.md` or other ad-hoc markdown tracker; the pre-commit hook
+     blocks them and they compete with the issue as the source of truth.
   3. End the turn cleanly.
 - Do not sit idle waiting for human approval that may not arrive for hours.
 - The only exception: a single retry is acceptable if the denial was clearly
@@ -94,38 +97,35 @@ selection, sub-agent design, parallelism, and graceful exit when blocked.
 - For one-off commands you don't want to persist, pick "allow for session".
 - Never attempt to bypass the prompt system for destructive operations.
 
-## NEXT_STEPS.md format
+## Issue checkpoint format
 
-When exiting a session with uncompleted work, write `NEXT_STEPS.md` at the
-repo root with this structure:
+When exiting a session with uncompleted work, post a comment on the work's
+GitHub issue (the single cross-session tracker) with this structure:
 
 ```markdown
-# Next steps — <YYYY-MM-DD HH:MM timezone>
+### Checkpoint — <YYYY-MM-DD HH:MM timezone>
 
-## In progress
-- **Task:** <short description, or plan task ID>
-- **Branch:** <branch name>
-- **Last committed:** <commit hash and message>
-- **Uncommitted on disk:** <file paths, or "none">
+**In progress:** <short description, or plan task ID>
+**Branch:** <branch name>
+**Last committed:** <commit hash and message>
+**Uncommitted on disk:** <file paths, or "none">
 
-## To resume
+**To resume:**
 1. `git switch <branch>`
 2. <specific command #1>
 3. <specific command #2>
 
-## Blocker
-<why this session ended — tool denial, usage limit, ambiguity, etc.
-If resolvable on resume, note the fix. If the user needs to decide
-something, state the decision plainly.>
+**Blocker:** <why this session ended — tool denial, usage limit, ambiguity.
+If resolvable on resume, note the fix; if the user must decide something, state
+it plainly.>
 
-## Context for resumption
-<1-3 sentences: what the goal was, what's been tried, what's left.
-Written so a fresh session can pick up without reading the whole
-conversation.>
+**Context:** <1–3 sentences: the goal, what's been tried, what's left — so a
+fresh session can resume without reading the whole conversation.>
 ```
 
-If the next resumption is trivial (just run one command), keep the file short.
-If the work is mid-design, capture more.
+If resumption is a single command, keep it short; if the work is mid-design,
+capture more. If no issue exists yet, file one first (the Gate-A issue
+scaffolding), then checkpoint on it.
 
 ## Overnight-specific rules
 - Before starting an overnight autonomous run:
@@ -135,7 +135,7 @@ If the work is mid-design, capture more.
   - Ensure the main-thread model is Sonnet, not Opus, unless the overnight
     task genuinely requires Opus reasoning throughout.
 - Sub-agents dispatched for overnight runs must have explicit instructions to
-  commit at task boundaries and write `NEXT_STEPS.md` on any blocker.
+  commit at task boundaries and post an issue checkpoint (above) on any blocker.
 - Prefer dispatching discrete chunks of work via background sub-agents rather
   than trying to hold a 12-hour context on the main thread. Main thread
   coordinates; sub-agents do the long work.

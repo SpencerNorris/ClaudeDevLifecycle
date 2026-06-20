@@ -47,10 +47,12 @@ mechanism chosen for its trust model and context cost:
 - **Hooks** — hard invariants, un-bypassable (`pre-push` rejects pushes to
   `main`/`master` and chains to repo-local hooks; `pre-commit` blocks forbidden
   tracker filenames and commits on `main`).
-- **Rules** — lean judgment for a thinking agent, in **two tiers**: an
+- **Rules** — lean judgment for a thinking agent, in **three buckets**: an
   always-on **constitution** (`CLAUDE.md`, global + project) holding short
-  universal stances, and **topical rules** (`rules/*.md`) holding procedural
-  detail, targeted to load on-demand. Net 3 global rule files
+  universal stances; **path-scoped rules** (`rules/*.md` with `paths:`
+  frontmatter — `code-style`, `adr-format`) that auto-load only on a matching
+  file; and **on-demand reference** (`reference/*.md` — the process rules) read
+  via the constitution's index. The rev-3 sort left 3 surviving design rules
   (`definition-of-done`, `no-shed`, `branch-lifecycle`), down from 7.
 - **Agents** — the fixed-prompt **adversarial-reviewer**, invoked by the
   orchestrator with fixed inputs (diff + DoD report + test output) so the
@@ -77,7 +79,7 @@ Supporting decisions:
 - **Easier:** autonomous multi-feature runs become safe (the reviewer agent is
   the autonomous skeptic); `main` is protected by three layers (branch
   protection, hook, settings); the standing rule set is smaller, so per-session
-  context drops as topical rules move on-demand.
+  context drops as the process rules move to on-demand reference.
 - **Harder:** more moving parts spread across four mechanisms — a contributor
   must know which mechanism owns a concern; the federated workflow and reviewer
   prompt are non-trivial to build.
@@ -87,7 +89,7 @@ Supporting decisions:
   applied at promotion, not yet realized.
 
 ## Notes
-- Control flow and mechanism diagrams: `../control-flow.md`.
+- Control flow and mechanism diagrams: `../master-design-doc.md`.
 - Design rationale and verification plan:
   `../specs/2026-05-31-branch-tier-autonomy-design.md`.
-- Constitution principle-lines staged for promotion: `../control-flow.md` §15.
+- Constitution principle-lines staged for promotion: `../master-design-doc.md` §15.

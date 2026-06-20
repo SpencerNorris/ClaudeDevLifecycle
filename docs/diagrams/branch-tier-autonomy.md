@@ -7,7 +7,7 @@
   diagrams were lost. Never again — the text lives here.)
 - **Spec:** `ClaudeDevCycle/docs/specs/2026-05-31-branch-tier-autonomy-design.md` (rev 3).
   Diagram intent: spec §13. These four diagrams supersede the rev-1 diagrams
-  still embedded in `ClaudeDevCycle/docs/control-flow.md`, which is now synced to
+  still embedded in `ClaudeDevCycle/docs/master-design-doc.md`, which is now synced to
   rev 3.
 
 Colour legend (consistent across all four):
@@ -35,8 +35,9 @@ graph TB
 
     subgraph GLOBAL["Global config — ~/.claude/ · THE FOUR MECHANISMS"]
         HOOKS["git hooks — HOOKS (invariants)<br/>pre-commit: forbidden trackers + no-main<br/>pre-push: reject main/master ref"]
-        CONST["CLAUDE.md — CONSTITUTION (always-on)<br/>universal stances: DoD · no-shed · tracker<br/>(RULES mechanism · tier 1)"]
-        RULES["rules/*.md — TOPICAL RULES (on-demand)<br/>DoD detail · no-shed tests · branch-lifecycle<br/>(RULES mechanism · tier 2)"]
+        CONST["CLAUDE.md — CONSTITUTION (always-on)<br/>universal stances: DoD · no-shed · tracker<br/>(RULES mechanism · bucket 1)"]
+        RULES["rules/*.md — PATH-SCOPED RULES<br/>code-style · adr-format (paths: frontmatter)<br/>(RULES mechanism · bucket 2 · auto-load on matching file)"]
+        REF["reference/*.md — ON-DEMAND REFERENCE<br/>DoD detail · no-shed · branch-lifecycle · testing · …<br/>(RULES mechanism · bucket 3 · read via CLAUDE.md index)"]
         AGENTS["agents/*.md — AGENTS (specialists)<br/>adversarial-reviewer (fixed prompt)"]
         WF["workflows/*.js — WORKFLOWS<br/>autonomous federated run<br/>(invokes reviewer; caps in code)"]
         SETT["settings.json — allow/deny<br/>tier allows: push non-main + merge<br/>main denies: push main, --force"]
@@ -60,7 +61,8 @@ graph TB
     HOOKS -.->|mechanically enforce| C
     SETT -.->|allow / deny| C
     CONST -.->|always guides| C
-    RULES -.->|read when relevant| C
+    RULES -.->|auto-load on matching file| C
+    REF -.->|read on-demand via index| C
     AGENTS -.->|invoked by| C
     WF -.->|dispatched by| C
     MEM -.->|loaded into| C
@@ -89,9 +91,10 @@ graph TB
 **Reading notes**
 
 - The four mechanisms, by trust model: **hooks** make invariants un-bypassable
-  (zero context, always on); **rules** guide a thinking agent in two tiers — the
-  always-on *constitution* (`CLAUDE.md`) and the *topical files* (`rules/*.md`,
-  today auto-injected but targeted to load on-demand); **agents** are fixed-prompt
+  (zero context, always on); **rules** guide a thinking agent in three buckets —
+  the always-on *constitution* (`CLAUDE.md`), the path-scoped *rules* (`rules/*.md`
+  with `paths:` frontmatter, auto-loaded on a matching file), and the on-demand
+  *reference* (`reference/*.md`, read via the constitution index); **agents** are fixed-prompt
   specialists invoked with fixed inputs (zero context until invoked — the
   implementer can't game them); **workflows** encode autonomous orchestration
   with caps/gates in code.

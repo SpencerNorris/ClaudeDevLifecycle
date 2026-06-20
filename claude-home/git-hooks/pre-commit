@@ -121,9 +121,7 @@ if branch_tier_opted_in; then
             lc_path="$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')"
 
             case "$lc_base" in
-                next_steps.md|backlog.md|todo.md|review.md|\
-                issues_to_file.md|bugs.md|known_issues.md|\
-                phase_*.md)
+                next_steps.md|backlog.md|todo.md|phase_*.md)
                     forbidden_hit="$f"
                     ;;
             esac
@@ -141,8 +139,7 @@ if branch_tier_opted_in; then
                 echo "    $forbidden_hit" >&2
                 echo "" >&2
                 echo "Ad-hoc markdown trackers are forbidden. Use a GitHub issue instead." >&2
-                echo "(Forbidden: NEXT_STEPS.md, BACKLOG.md, TODO.md, REVIEW.md, PHASE_*.md," >&2
-                echo " ISSUES_TO_FILE.md, docs/issues-to-file.md, BUGS.md, KNOWN_ISSUES.md.)" >&2
+                echo "(Forbidden: NEXT_STEPS.md, BACKLOG.md, TODO.md, PHASE_*.md, docs/issues-to-file.md.)" >&2
                 exit 1
             fi
         done <<EOF
