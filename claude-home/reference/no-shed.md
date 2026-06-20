@@ -27,6 +27,28 @@ This includes:
 If the fix is small, just do it. Note it under "Incidental fixes" in
 the change report.
 
+## Fixing means fixing — no shims
+
+"Fix it in this change" means a *real* fix. Making code merely *look* fixed — a
+shim — sheds the bug just as surely as filing it away, and it is worse: the bug
+ships hidden. The test:
+
+> A change that makes code appear correct without being correct is a shim.
+
+Common forms (illustrative, **not exhaustive** — a shim not listed here is still a
+shim):
+- **Cast-to-`None`/null** — coercing a value to `None`/`null`/`""`/`0` to silence a
+  check or satisfy a type instead of computing the real value.
+- **Swallowed error** — `try/except: pass`, a bare/empty catch, `.catch(() => {})`:
+  turning a failure into a fake success.
+- **Weakened test** — loosening or deleting an assertion, `skip`-ing a test, or
+  editing the expected value to match buggy output so the suite goes green.
+
+The full catalog lives where it is mechanically enforced — the
+`adversarial-reviewer` agent's refutation checklist, which hunts for these on every
+autonomous feature. Here, the principle is what you apply *while implementing*: if
+you catch yourself reaching for any of these, stop and fix the actual cause.
+
 ## Two exceptions only
 
 A bug may be filed as a separate issue instead of fixed in-PR if:

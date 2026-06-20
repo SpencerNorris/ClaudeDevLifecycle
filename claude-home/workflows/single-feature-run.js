@@ -2,7 +2,7 @@
  * single-feature-run.js — the autonomous single-feature dev cycle (D2 as a workflow).
  *
  * WHAT THIS IS
- *   The control-flow document's per-task discipline ("D2") has two execution
+ *   The master design document's per-task discipline ("D2") has two execution
  *   modes (master-design-doc.md §5). In INTERACTIVE mode a human is the skeptic and
  *   the main loop holds the conversation. In AUTONOMOUS mode the same discipline
  *   is encoded HERE, as a workflow: the adversarial-reviewer AGENT is the skeptic

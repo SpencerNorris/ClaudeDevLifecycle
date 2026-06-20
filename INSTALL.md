@@ -31,7 +31,7 @@ claude-home/
   git-hooks/
     pre-commit  pre-push         # global git hooks (enabled via core.hooksPath; enforcement opt-in per repo)
   hooks/
-    bootstrap-check.sh           # your existing SessionStart hook (carried forward unchanged)
+    bootstrap-check.sh           # your existing SessionStart hook (fixed a pre-existing heredoc/indentation bug)
   skills/
     bootstrap-permissions/SKILL.md   # your existing skill (carried forward unchanged)
 ```
