@@ -26,7 +26,7 @@ I don't always know best, and neither do you. We need to work as a team and form
 Follow, in order:
 1. direct user instructions
 2. this `CLAUDE.md` (the always-on constitution)
-3. the relevant path-scoped rule in `~/.claude/rules/` or on-demand reference in `~/.claude/reference/` (see the index below)
+3. the relevant path-scoped rule in `.claude/rules/` or on-demand reference in `.claude/reference/` (see the index below)
 4. existing repository conventions
 
 ## Core principles (always-on constitution)
@@ -37,15 +37,15 @@ trigger matches. The stance you must never forget is here.
 - **Definition of done:** a change is not done until it has been exercised against
   the running system and a smoke-test transcript is in the report. Passing
   unit/integration tests is necessary, not sufficient.
-  (Detail: `~/.claude/reference/definition-of-done.md`.)
+  (Detail: `.claude/reference/definition-of-done.md`.)
 - **No-shed:** bugs found while implementing get fixed in the same change. Filing
   an issue is only for genuinely orthogonal scope, or explicit user deferral —
-  never an escape hatch to declare done. (Detail: `~/.claude/reference/no-shed.md`.)
+  never an escape hatch to declare done. (Detail: `.claude/reference/no-shed.md`.)
 - **Single tracker:** GitHub Issues is the only persistent cross-session tracker —
   file bugs, features, and follow-ups as issues, never as ad-hoc markdown
   (`NEXT_STEPS.md`, `BACKLOG.md`, …). Generate status snapshots on demand from the
   source of truth; never hand-maintain them.
-  (Resume / lifecycle detail: `~/.claude/reference/branch-lifecycle.md`.)
+  (Resume / lifecycle detail: `.claude/reference/branch-lifecycle.md`.)
 - **Local-CI parity:** aim for an expected-green first push; a cheap local
   pre-check (`act`) is worth it where CI exists, but real CI is the gate.
 
@@ -53,11 +53,11 @@ trigger matches. The stance you must never forget is here.
 The constitution above is always on. Everything else loads only when relevant, so
 a session pays context only for the guidance the work actually touches.
 
-**Path-scoped** (`~/.claude/rules/` — auto-load only when you touch a matching file):
+**Path-scoped** (`.claude/rules/` — auto-load only when you touch a matching file):
 - `code-style.md` — readability, comments, docstrings (loads on source files).
 - `adr-format.md` — the ADR template (loads on `docs/adr/**`).
 
-**On-demand reference** (`~/.claude/reference/` — open with the Read tool when its trigger matches):
+**On-demand reference** (`.claude/reference/` — open with the Read tool when its trigger matches):
 - `definition-of-done.md` — DoD report contract, smoke depth, surface-by-type playbook.
 - `no-shed.md` — orthogonality tests, the 5+-filings escalation.
 - `branch-lifecycle.md` — branch states, naming, cleanup, the cross-session resume anchor.
@@ -73,22 +73,25 @@ Before non-trivial work, read the reference file whose trigger matches the chang
 ## Autonomous dev — the branch-tier model
 `main` is protected; all non-`main` branches are the sandbox. There are two human
 gates: **Gate A** (authorize a run: scope, budget, target dev branch, a linked
-GitHub issue) and **Gate B** (merge the `dev→main` PR). Enforcement is mechanical
-and **opt-in per repo** — activate it by ANY of: a `.claude/branch-tier` file at
-the repo root, `CLAUDE_BRANCH_TIER=1`, or `git config claude.branchTier true`.
+GitHub issue) and **Gate B** (merge the `dev→main` PR). Never commit or push to
+`main` directly; reach it only via a reviewed PR.
 
-- **Hooks** (`~/.claude/git-hooks/`, enabled by `core.hooksPath`): block
-  *Claude-initiated* direct commits/pushes to `main`/`master` and forbidden tracker
-  filenames. A human in their own terminal (Gate B) is unaffected.
-- **Settings** (`~/.claude/settings.json`): allow tier pushes + `git merge`; deny
-  main and force pushes.
-- **Agents — the review panel** (`~/.claude/agents/`): gate each feature after its
-  DoD report, before push/merge. Always: `adversarial-reviewer` (no shims/dishonest
-  DoD) + `correctness-reviewer` (real logic/edge bugs). Opt-in per project (the run's
+- **Settings** (`.claude/settings.json`): the enforced layer that travels — denies
+  `git push origin main`/`master` and force pushes, allows tier pushes
+  (`dev/feat/fix/chore/integration/*`) + `git merge`. Applies to Claude in **both
+  local and cloud** runs.
+- **Agents — the review panel** (`.claude/agents/`): gate each feature after its DoD
+  report, before push/merge. Always: `adversarial-reviewer` (no shims/dishonest DoD)
+  + `correctness-reviewer` (real logic/edge bugs). Opt-in per project (the run's
   `reviewers` arg): `security-reviewer`, `performance-reviewer`.
-- **Workflows** (`~/.claude/workflows/`): `single-feature-run.js` (D2) and
+- **Workflows** (`.claude/workflows/`): `single-feature-run.js` (D2) and
   `federated-run.js` (D4) run the autonomous cycle with the reviewer gate and
   K-capped retry loops that escalate (never loop forever, never shim).
+- **No git hooks here.** The branch-tier `pre-commit`/`pre-push` hooks are a
+  *local-only* mechanism and do **not** run in a cloud/remote session. In that
+  environment, `main`-protection is the settings deny-list above **plus GitHub
+  server-side branch protection** (set it where your plan allows). Stay on tier
+  branches.
 
 ## Global defaults
 - Read relevant files before editing.

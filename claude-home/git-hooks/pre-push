@@ -15,8 +15,9 @@
 #      chained hook).
 #   2. (ALWAYS) If we are not inside a git repo, replay stdin to any repo-local
 #      hook and exit; otherwise exit 0.
-#   3. (OPT-IN ONLY) Reject the push if any updated remote ref names a protected
-#      branch (refs/heads/main or refs/heads/master, per GIT_PROTECTED_BRANCHES).
+#   3. (OPT-IN + CLAUDE-INITIATED ONLY) Reject the push if any updated remote ref
+#      names a protected branch (refs/heads/main or refs/heads/master, per
+#      GIT_PROTECTED_BRANCHES). Only Claude's pushes are gated; a human pushes free.
 #   4. (ALWAYS) Chain to the repo-local pre-push hook if one exists, replaying the
 #      captured stdin to it, because a global core.hooksPath SHADOWS .git/hooks/*.
 #
@@ -37,9 +38,10 @@
 #   Not opted in → no protected-branch check; the hook is transparent and only
 #   chains to the repo-local hook.
 #
-#   NOTE: GitHub server-side branch protection is the real guarantee for main;
-#   this hook is the local convenience layer that closes the bare-`git push` gap
-#   on repos that opt in.
+#   NOTE: GitHub server-side branch protection is the only *unbypassable* layer for
+#   main (where the plan offers it). This hook is the LOCAL guard — it gates
+#   Claude-initiated pushes to main and closes the bare-`git push` gap on opted-in
+#   repos, and is your primary main-protection where server-side isn't available.
 #
 # ROBUSTNESS NOTES
 #   - `set -u` catches unset-variable bugs. We deliberately avoid `set -e` and
@@ -159,7 +161,16 @@ branch_tier_opted_in() {
     return 1
 }
 
-if branch_tier_opted_in; then
+# Gate enforcement to CLAUDE-initiated git only. A human in their own terminal is
+# the Gate-B authority and pushes freely — only the autonomous agent is constrained
+# here. Claude Code sets CLAUDECODE in the environment of every command it runs,
+# which this hook (a child process of git) inherits; a normal human shell does not.
+# So: enforce when opted in AND the push was initiated by Claude.
+claude_initiated() {
+    [ -n "${CLAUDECODE:-}" ]
+}
+
+if branch_tier_opted_in && claude_initiated; then
     # -----------------------------------------------------------------------
     # Step 3a — Reject pushes that target a protected branch.
     #

@@ -24,7 +24,10 @@ claude-home/
     definition-of-done.md  no-shed.md  branch-lifecycle.md       # the rev-3 design rules
     architecture.md  documentation.md  testing.md  workflow.md  workflow-autonomy.md   # your existing process rules
   agents/
-    adversarial-reviewer.md      # the refute-first review agent (the autonomous skeptic)
+    adversarial-reviewer.md      # review panel: refute-first (shims / DoD honesty)
+    correctness-reviewer.md      #   + correctness (real logic/edge bugs) — always-on
+    security-reviewer.md         #   + security — opt-in per project (run's reviewers arg)
+    performance-reviewer.md      #   + performance — opt-in per project
   workflows/
     single-feature-run.js        # D2 autonomous cycle as a workflow
     federated-run.js             # D4 federated multi-feature run
@@ -112,12 +115,16 @@ noise or would clobber live state:
    ```bash
    touch .claude/branch-tier      # or: export CLAUDE_BRANCH_TIER=1   # or: git config claude.branchTier true
    ```
-   Only then do the hooks block direct commits/pushes to `main` and forbidden
-   tracker files in that repo.
+   Only then do the hooks act — and only on *Claude-initiated* git: they block
+   Claude's direct commits/pushes to `main` and tracker files in that repo. You,
+   in your own terminal, commit and push to `main` freely (you're Gate B).
 
-6. **Set GitHub branch protection on `main`** (the real, server-side guarantee —
-   the local hooks are a convenience layer): require a PR + ≥1 approval, block
-   direct/force pushes. One-time, per repo, in the GitHub UI.
+6. **Set GitHub branch protection on `main`** where your plan allows it — the only
+   *unbypassable* layer (require a PR + ≥1 approval, block direct/force pushes;
+   one-time, per repo, in the GitHub UI). Note: protected branches on *private*
+   repos need a paid GitHub plan. **Where it isn't available, the opted-in local
+   hooks (step 5) are your `main`-protection** — they stop accidental pushes to
+   `main`, though a deliberate `--no-verify` bypasses them.
 
 ---
 
@@ -139,7 +146,7 @@ gate — but I'd recommend keeping the opt-in. Your call.
   **allow** globs (`feat/*`, etc.) behave as you expect on your version.
 - **The workflows are templates.** `single-feature-run.js` and `federated-run.js`
   are valid (`node --check` passes) and use the real Workflow DSL, but they invoke
-  the GitHub MCP / `gh` and the `adversarial-reviewer` agent at runtime and have
+  the GitHub MCP / `gh` and the review-panel agents at runtime and have
   not been run end-to-end against a live repo. Treat the first real run as a
   shakedown.
 - **On-demand vs always-on is a tradeoff.** Moving the process rules to

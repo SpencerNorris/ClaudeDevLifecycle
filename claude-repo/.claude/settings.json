@@ -1,40 +1,4 @@
 {
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash $HOME/.claude/hooks/bootstrap-check.sh"
-          }
-        ]
-      }
-    ]
-  },
-  "enabledPlugins": {
-    "github@claude-plugins-official": true,
-    "supabase@claude-plugins-official": true,
-    "voltagent-core-dev@voltagent-subagents": true,
-    "voltagent-qa-sec@voltagent-subagents": true,
-    "voltagent-data-ai@voltagent-subagents": true,
-    "voltagent-meta@voltagent-subagents": true,
-    "voltagent-research@voltagent-subagents": true,
-    "voltagent-domains@voltagent-subagents": true,
-    "superpowers@claude-plugins-official": true,
-    "code-review@claude-plugins-official": true,
-    "playwright@claude-plugins-official": true
-  },
-  "effortLevel": "xhigh",
-  "voice": {
-    "enabled": true,
-    "mode": "hold"
-  },
-  "skipWorkflowUsageWarning": true,
-  "agentPushNotifEnabled": true,
-  "skipAutoPermissionPrompt": true,
-  "voiceEnabled": true,
-  "model": "opus[1m]",
   "permissions": {
     "deny": [
       "Bash(git push origin main:*)",
@@ -68,6 +32,19 @@
       "Bash(git push origin fix/*)",
       "Bash(git push origin chore/*)",
       "Bash(git push origin integration/*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh\""
+          }
+        ]
+      }
     ]
   }
 }

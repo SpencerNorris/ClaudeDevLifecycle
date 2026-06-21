@@ -12,7 +12,8 @@
 #
 # WHAT IT DOES
 #   1. (ALWAYS) If we are not inside a git repo, exit 0 immediately.
-#   2. (OPT-IN ONLY) Enforce two branch-tier invariants:
+#   2. (OPT-IN + CLAUDE-INITIATED ONLY) Enforce two branch-tier invariants on
+#      Claude's own commits (a human in their own terminal is Gate B, unaffected):
 #        a. Reject staged forbidden tracker files (NEXT_STEPS.md, TODO.md, …) —
 #           these belong in GitHub Issues, not committed markdown.
 #        b. Reject commits made while a protected branch (main/master) is checked
@@ -88,7 +89,16 @@ branch_tier_opted_in() {
     return 1
 }
 
-if branch_tier_opted_in; then
+# Gate enforcement to CLAUDE-initiated git only. A human in their own terminal is
+# the Gate-B authority and commits/pushes freely — only the autonomous agent is
+# constrained here. Claude Code sets CLAUDECODE in the environment of every command
+# it runs, which this hook (a child process of git) inherits; a normal human shell
+# does not. So: enforce when opted in AND the commit was initiated by Claude.
+claude_initiated() {
+    [ -n "${CLAUDECODE:-}" ]
+}
+
+if branch_tier_opted_in && claude_initiated; then
     # -----------------------------------------------------------------------
     # Step 2a — Reject staged forbidden tracker files.
     #

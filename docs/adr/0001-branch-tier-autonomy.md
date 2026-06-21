@@ -54,9 +54,11 @@ mechanism chosen for its trust model and context cost:
   file; and **on-demand reference** (`reference/*.md` — the process rules) read
   via the constitution's index. The rev-3 sort left 3 surviving design rules
   (`definition-of-done`, `no-shed`, `branch-lifecycle`), down from 7.
-- **Agents** — the fixed-prompt **adversarial-reviewer**, invoked by the
-  orchestrator with fixed inputs (diff + DoD report + test output) so the
-  implementer cannot skip or game its own critic.
+- **Agents** — the fixed-prompt **review panel** (`adversarial-reviewer` +
+  `correctness-reviewer` always-on; `security-reviewer` + `performance-reviewer`
+  opt-in per project), invoked by the orchestrator with fixed inputs. Each reviewer
+  independently reconstructs the diff (`git diff <base>...HEAD`) and re-runs tests
+  against the claimed results, so the implementer cannot skip or game its critics.
 - **Workflows** — autonomous orchestration with caps, gates, and fan-out in
   code (single-feature run; federated multi-feature run).
 
@@ -67,23 +69,25 @@ Supporting decisions:
 - **Two gates** — **Gate A** (authorize the run: scope, budget, dev branch,
   issue scaffolding) and **Gate B** (review and merge the `dev→main` PR).
   Nothing reaches `main` without the user's explicit Gate-B merge.
-- **Adversarial-reviewer agent** — a mandatory autonomous-workflow stage after
-  validation + DoD report, before push/integrate (per feature in the federated
-  run). The human plays this role at Gate B in interactive mode.
+- **Review panel** — a mandatory autonomous-workflow stage after validation + DoD
+  report, before push/integrate (per feature in the federated run); a feature passes
+  only when every dispatched reviewer passes. The human plays this role at Gate B in
+  interactive mode.
 - **Circuit breaker** — every retry loop (validation, review-reject, CI) capped
   at K iterations (default ~3) in workflow code; on exhaustion, root-cause
   diagnosis then escalation to the user via a `needs-human` GitHub issue
   comment — never an infinite loop, never a shim.
 
 ## Consequences
-- **Easier:** autonomous multi-feature runs become safe (the reviewer agent is
-  the autonomous skeptic); `main` is protected by three layers (branch
-  protection, hook, settings); the standing rule set is smaller, so per-session
+- **Easier:** autonomous multi-feature runs become safe (the review panel is
+  the autonomous skeptic); `main` is protected by up to three layers (server-side
+  branch protection where the plan allows, plus the local hook + settings); the
+  standing rule set is smaller, so per-session
   context drops as the process rules move to on-demand reference.
 - **Harder:** more moving parts spread across four mechanisms — a contributor
   must know which mechanism owns a concern; the federated workflow and reviewer
   prompt are non-trivial to build.
-- **Riskier:** the reviewer agent adds one call per feature (cheap insurance);
+- **Riskier:** the review panel adds ≥2 parallel calls per feature (cheap insurance);
   global `core.hooksPath` shadows repo-local hooks, mitigated by explicit
   chaining; the on-demand-loading payoff depends on a global-config change
   applied at promotion, not yet realized.
