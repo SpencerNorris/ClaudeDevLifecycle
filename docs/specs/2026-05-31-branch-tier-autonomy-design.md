@@ -72,9 +72,8 @@ itself a rule, not itself a workflow. It executes two ways:
   approval, PR review). Governed by the lean rules. A workflow cannot hold this
   conversation, so this mode stays main-loop.
 - **Autonomous** (the federated run "D4", and authorized single-feature runs):
-  encoded as a **workflow**, dispatched after Gate A. The **adversarial-reviewer
-  agent is the skeptic** (a mandatory stage); retry caps + escalation are
-  enforced in workflow code.
+  encoded as a **workflow**, dispatched after Gate A. The **review panel is the
+  skeptic** (a mandatory stage); retry caps + escalation are enforced in workflow code.
 
 This resolves "why isn't D2 a workflow?": its *autonomous* execution **is** one;
 its *interactive* execution is the main loop. One discipline, two executions.
@@ -108,24 +107,30 @@ Plus one **exception** touchpoint: **escalation** when the circuit breaker
 trips (§7). Routine = two touchpoints; you are pulled in mid-run only when
 something is genuinely wrong.
 
-## 5. Adversarial review (the autonomous skeptic)
+## 5. The review panel (the autonomous skeptics)
 
-- **What:** a fixed-prompt **agent** (`~/.claude/agents/adversarial-reviewer`).
-  Refute-first. Input: the diff + the DoD report + test output. Output: a
-  structured verdict (pass / fail + specific findings). Hunts for skipped or
-  weakened tests, `try/except pass`, hardcoded returns, cast-to-`None`, narrowed
-  assertions, unaddressed root cause, missing named edge cases, and **dishonest
-  DoD claims** (does the report match the actual test output?).
-- **Where:** a **mandatory stage in the autonomous workflow**, after validation
-  + DoD report, before push/integrate. Reject → back to implementation **with
-  the critique** (autonomous retry, subject to the cap). In the federated run it
-  runs **per feature**, before that feature merges onto the dev branch.
-- **Why mechanical, not a rule:** the implementer must not be trusted to summon
-  and honestly report its own critic. The **workflow** invokes the reviewer with
-  fixed inputs; the implementer cannot skip or game it.
-- **Interactive mode:** the **human** plays this role at Gate B / PR review.
-  (The agent may optionally be invoked as a courtesy pre-check, but when a human
-  is present the human is the real reviewer.)
+- **What:** a **panel** of fixed-prompt **agents** (`~/.claude/agents/`), run in
+  parallel. Always on: `adversarial-reviewer` (*did the implementer cheat?* —
+  skipped/weakened tests, `try/except pass`, hardcoded returns, cast-to-`None`,
+  narrowed assertions, unaddressed root cause, missing named edge cases, and
+  **dishonest DoD claims**) and `correctness-reviewer` (*is the code actually
+  right?* — logic errors, boundary/edge cases, null/empty mishandling, mishandled
+  error paths, races, contract violations; passing tests ≠ correctness). Opt in
+  per project (the run's `reviewers` arg, defaulted from the repo `CLAUDE.md`):
+  `security-reviewer`, `performance-reviewer`. All read-only.
+- **Independent evidence — not handed in:** each reviewer **reconstructs the real
+  diff itself** (`git diff <base>...HEAD`) and **re-runs** what it needs, comparing
+  to the implementer's *claimed* results — never trusted with a self-reported file
+  list. Output: a structured verdict (pass / reject + specific findings).
+- **Where:** a **mandatory stage in the autonomous workflow**, after validation +
+  DoD report, before push/integrate; **per feature** in the federated run. A feature
+  passes only when **every** dispatched reviewer passes; any reject → back to
+  implementation with the **aggregated** critique (autonomous retry, under the cap).
+- **Why mechanical, not a rule:** the implementer must not be trusted to summon and
+  honestly report its own critics. The **workflow** invokes them with fixed inputs;
+  the implementer cannot skip or game them.
+- **Interactive mode:** the **human** plays this role at Gate B / PR review (and may
+  run `/code-review` for a deep pass). When a human is present they are the real reviewer.
 - **Verdict persistence:** reject verdicts are transient — passed directly to
   the implementing agent as retry context (the critique is the input). The
   **passing verdict** is appended to the DoD report as a `## Reviewer Verdict`
@@ -197,10 +202,10 @@ With mechanical concerns moved out and the constitution carrying the universal
 
 - `definition-of-done.md` — **keep, lean.** The DoD report contract: smoke depth,
   surface-by-type playbook, report structure. Its one-line *stance* is elevated
-  to the constitution; honesty is *also* enforced by the reviewer agent.
+  to the constitution; honesty is *also* enforced by the adversarial reviewer.
 - `no-shed.md` — **keep, thin.** The orthogonality tests + the 5+-filings
   escalation. Its *principle* is elevated to the constitution; the shim taxonomy
-  is *also* the reviewer agent's checklist.
+  is *also* the adversarial reviewer's checklist.
 - `branch-lifecycle.md` — **keep, lean.** + the three-bucket model; it also absorbs
   the cross-session resume anchor + docs-vs-tracking razor from the retired
   `single-tracker`.
@@ -212,7 +217,7 @@ With mechanical concerns moved out and the constitution carrying the universal
   principle (expected-green first push, real CI is the gate) → the constitution.
 - `workflow-dispatch.md` — **not a standing rule.** Folds into Gate-A
   authorization + workflow code.
-- adversarial review — **not a rule.** It is the reviewer agent + a workflow stage.
+- adversarial review — **not a rule.** It is the review-panel agents + a workflow stage.
 
 **Net: 3 global rule files (`definition-of-done`, `no-shed`, `branch-lifecycle`),
 down from 7.** The elevated principles live in the constitution; the demoted
@@ -255,15 +260,17 @@ surviving principle lives in the constitution.
 
 A workflow that, given a feature list + dev branch: fans out one
 worktree-isolated agent per feature (TDD + validation + DoD report) → **runs the
-adversarial-reviewer agent per feature** → merges each *reviewed-green* feature
+review panel per feature** (adversarial + correctness always; security/performance
+opt-in) → merges each *reviewed-green* feature
 onto dev → pushes dev, opens one `dev→main` PR with all DoD reports, triggers CI
 → iterates under the §7 cap → returns the PR link. Authorize at Gate A, merge at
 Gate B. Specced and built separately.
 
 ## 12. Impact — artifacts
 
-- **New:** `~/.claude/agents/adversarial-reviewer` (fixed-prompt agent); the
-  autonomous-run workflow(s) under `~/.claude/workflows/`; the `pre-push` +
+- **New:** the review-panel agents under `~/.claude/agents/` (`adversarial-reviewer`
+  + `correctness-reviewer` always; `security-reviewer` + `performance-reviewer`
+  opt-in); the autonomous-run workflow(s) under `~/.claude/workflows/`; the `pre-push` +
   `pre-commit` hooks; `ClaudeDevCycle/docs/adr/0001-branch-tier-autonomy.md`.
 - **Not creating** (category errors): a `workflow-dispatch.md` rule, an
   `adversarial-review.md` rule.
@@ -282,14 +289,13 @@ Gate B. Specced and built separately.
 
 ## 13. Diagrams (to redraw after this spec's shape is confirmed)
 
-- **D2:** insert the adversarial-review **agent stage** (after DoD report, before
-  push); mark the autonomous portion as "the autonomous workflow"; show the
-  retry-cap + escalation on the loops.
-- **D4:** per-feature adversarial review before merge-onto-dev; label the whole
-  flow "one Claude workflow (invokes the reviewer agent; caps in code)"; show
-  escalation.
-- **D1:** note the reviewer in the agents box and the autonomous-run workflow in
-  the workflows box.
+- **D2:** insert the **review-panel stage** (after DoD report, before push); mark
+  the autonomous portion as "the autonomous workflow"; show the retry-cap +
+  escalation on the loops. *(Done — D2 shows the panel.)*
+- **D4:** the **review panel** per feature before merge-onto-dev; label the whole
+  flow "one Claude workflow (invokes the panel; caps in code)"; show escalation.
+- **D1:** note the **review-panel** agents in the agents box and the autonomous-run
+  workflow in the workflows box.
 - Redraw is deferred to one clean pass *after* you confirm this shape, to avoid
   drawing twice (and to avoid the Excalidraw duplicate-label churn).
 
@@ -306,7 +312,8 @@ escalates after `K` failed iterations instead of looping.
   to repo-local ones; protect only `main`/`master`; per-repo override.
 - **GitHub branch protection may be absent** → local hook + deny still hold the
   invariant; the run-authorization notes when server-side protection is missing.
-- **Reviewer-agent cost** → one extra agent call per feature; cheap insurance,
+- **Review-panel cost** → ≥2 parallel reviewer calls per feature (adversarial +
+  correctness always; +1 each for opt-in security/performance); cheap insurance,
   and only on authorized autonomous runs.
 - **Budget** → Gate-A authorization covers it; the §7 cap bounds runaway loops.
 

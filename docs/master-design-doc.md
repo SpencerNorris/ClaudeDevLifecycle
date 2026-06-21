@@ -1,4 +1,4 @@
-# Development Control Flow — rev 3
+# Master Design Doc — Development Control Flow (rev 3)
 
 ## Status
 Revision 3. Synced with
@@ -99,8 +99,8 @@ graph TB
         CONST["CLAUDE.md — CONSTITUTION (always-on)<br/>universal stances: DoD · no-shed · tracker<br/>(RULES mechanism · bucket 1)"]
         RULES["rules/*.md — PATH-SCOPED RULES<br/>code-style · adr-format (paths: frontmatter)<br/>(RULES mechanism · bucket 2 · auto-load on matching file)"]
         REF["reference/*.md — ON-DEMAND REFERENCE<br/>DoD detail · no-shed · branch-lifecycle · testing · …<br/>(RULES mechanism · bucket 3 · read via CLAUDE.md index)"]
-        AGENTS["agents/*.md — AGENTS (specialists)<br/>adversarial-reviewer (fixed prompt)"]
-        WF["workflows/*.js — WORKFLOWS<br/>autonomous federated run<br/>(invokes reviewer; caps in code)"]
+        AGENTS["agents/*.md — AGENTS (review panel)<br/>adversarial + correctness (always)<br/>+ security + performance (opt-in)"]
+        WF["workflows/*.js — WORKFLOWS<br/>autonomous federated run<br/>(invokes the review panel; caps in code)"]
         SETT["settings.json — allow/deny<br/>tier allows: push non-main + merge<br/>main denies: push main, --force"]
         MEM["memory/<br/>cross-session facts"]
     end
@@ -192,7 +192,7 @@ trips (§9). Routine = two touchpoints; you are pulled in mid-run only when
 something is genuinely wrong.
 
 The rev-1 mid-flow **DoD-acceptance gate** is gone in autonomous mode — its
-skepticism is now the adversarial-reviewer agent (§8). The rev-1 **push gate**
+skepticism is now the review panel (§8). The rev-1 **push gate**
 (user runs `git push`) is gone — Claude pushes non-`main` branches autonomously.
 
 Gate A may include **plan pre-authorization** ("come up with your own plan, I
@@ -220,9 +220,8 @@ itself a workflow. It has two execution modes:
   enforced in workflow code.
 
 The autonomous mode is drawn below. In interactive mode, the plan-approval gate
-is always active (no short-circuit), the human replaces the reviewer agent at
-Gate B / PR review, and the human may optionally invoke the reviewer agent as a
-courtesy pre-check.
+is always active (no short-circuit), the human replaces the review panel at
+Gate B / PR review, and may optionally run `/code-review` as a courtesy pre-check.
 
 ```mermaid
 flowchart TD
@@ -288,10 +287,10 @@ flowchart TD
   discipline conversationally, and **the human is the skeptic** (plan approval,
   PR review) — a workflow can't hold that conversation, so it stays main-loop.
   *Autonomous* (drawn here, and the federated run D4): encoded as a **workflow**;
-  the **reviewer agent is the skeptic**; caps + escalation are in code.
+  the **review panel is the skeptic**; caps + escalation are in code.
 - **Gate A** moves up front (authorize the run). The rev-1 mid-flow
   *DoD-acceptance* gate is **gone** in autonomous mode — its skepticism is now
-  the teal reviewer agent. **Gate B** is the `dev→main` PR merge.
+  the teal review panel. **Gate B** is the `dev→main` PR merge.
 - The **plan-approval gate** defaults to user review. In autonomous mode, it can
   be **short-circuited** when the user pre-authorizes plan autonomy at Gate A
   ("come up with your own plan, I trust you"). Trivial tasks skip planning
@@ -303,8 +302,8 @@ flowchart TD
   K** (default ~3). Exhaustion triggers root-cause diagnosis, then escalation —
   never an infinite loop, never a shim.
 - **†** In **interactive mode**, these nodes change roles: the plan-approval gate
-  is always human-reviewed (no short-circuit); the adversarial-reviewer agent is
-  replaced by the human at Gate B / PR review.
+  is always human-reviewed (no short-circuit); the review panel is replaced by the
+  human at Gate B / PR review.
 
 ---
 
@@ -338,7 +337,7 @@ flowchart LR
 ## 7 — Federated multi-feature run — D4
 
 The capability branch-tier autonomy unlocks. **One workflow** fans out one
-worktree-isolated agent per feature, gates each with the **reviewer agent**
+worktree-isolated agent per feature, gates each with the **review panel**
 before it merges onto the dev branch, then opens a single `dev→main` PR. Retry
 caps + escalation live in the workflow code.
 
@@ -350,9 +349,9 @@ flowchart TD
     SPAWN --> FB["feat B<br/>TDD · validate · DoD"]
     SPAWN --> FC["feat C … ×N<br/>TDD · validate · DoD"]
 
-    FA --> RA[["reviewer agent"]]
-    FB --> RB[["reviewer agent"]]
-    FC --> RC[["reviewer agent"]]
+    FA --> RA[["review panel"]]
+    FB --> RB[["review panel"]]
+    FC --> RC[["review panel"]]
 
     RA -->|"reject + critique (cap K)"| FA
     RB -->|"reject + critique (cap K)"| FB
@@ -388,7 +387,7 @@ flowchart TD
 - D4 **nests** D3 (it is one "Work" iteration) and contains N **cores** of D2
   (implement → validate → DoD → review) run concurrently — not N full D2s. The
   push / PR / CI / Gate-B tail happens **once** for the whole batch.
-- The reviewer agent gates **each feature** before it merges onto dev, so a
+- The review panel gates **each feature** before it merges onto dev, so a
   shimmed feature never reaches the shared branch.
 - Two human touchpoints for the whole batch: **Gate A** (authorize) and **Gate
   B** (merge). Escalation only fires when a cap is exhausted.
@@ -499,14 +498,14 @@ With mechanical concerns moved out, standing rules shrink to lean judgment:
 
 | Rule | Disposition | Notes |
 |---|---|---|
-| `definition-of-done.md` | **keep, lean** | What "done" means; the DoD report contract. Stance elevated to the constitution; honesty is *also* enforced by the reviewer agent in autonomous mode. |
-| `no-shed.md` | **keep, thin** | Principle elevated to the constitution; file keeps the orthogonality tests + the 5+-filings escalation. The shim taxonomy is *also* the reviewer agent's checklist. |
+| `definition-of-done.md` | **keep, lean** | What "done" means; the DoD report contract. Stance elevated to the constitution; honesty is *also* enforced by the adversarial reviewer in autonomous mode. |
+| `no-shed.md` | **keep, thin** | Principle elevated to the constitution; file keeps the orthogonality tests + the 5+-filings escalation. The shim taxonomy is *also* the adversarial reviewer's checklist. |
 | `branch-lifecycle.md` | **keep, lean** | + the three-bucket model; absorbs the cross-session resume anchor + docs-vs-tracking razor from the retired `single-tracker.md`. |
 | `local-ci-parity.md` | **demoted — project reference** | Moved to `docs/references/`; principle elevated to the constitution; the `act` how-to is project-specific (only where GitHub Actions exists). |
 | `single-tracker.md` | **deleted — redistributed** | Invariant → pre-commit hook; principle → constitution; practices → `branch-lifecycle.md`. |
 
 **Not created** (category errors): `workflow-dispatch.md` (folds into Gate-A +
-workflow code), `adversarial-review.md` (it is the reviewer agent + a workflow
+workflow code), `adversarial-review.md` (it is the review-panel agents + a workflow
 stage).
 
 **Net of the rev-3 sort: 3 surviving design rules (`definition-of-done`, `no-shed`,
@@ -551,8 +550,8 @@ Where each rule fires in the control flow:
 
 | Rule | Enforced at | Mechanism |
 |---|---|---|
-| `definition-of-done.md` | DoD report (D2) + reviewer agent (autonomous) + Gate B (interactive) | Report structure required; reviewer agent verifies honesty; user verifies at merge |
-| `no-shed.md` | Bug-discovered decision (D2) + reviewer agent checklist | Default-fix; orthogonal exception requires GH issue; reviewer catches shims |
+| `definition-of-done.md` | DoD report (D2) + adversarial reviewer (autonomous) + Gate B (interactive) | Report structure required; the adversarial reviewer verifies honesty; user verifies at merge |
+| `no-shed.md` | Bug-discovered decision (D2) + adversarial reviewer's checklist | Default-fix; orthogonal exception requires GH issue; the adversarial reviewer catches shims |
 | `branch-lifecycle.md` | Branch creation + cleanup (D2) | Naming convention at creation; mandatory delete at close |
 | local-CI-parity *(project ref)* | Optional pre-check (D2) | `act` how-to now in project `docs/references/`; the expected-green principle in the constitution; real CI is the gate |
 | forbidden-tracker invariant | pre-commit hook (commit time) | Forbidden filenames blocked at commit; principle in global `CLAUDE.md`; resume + docs-vs-tracking practices in `branch-lifecycle.md` |

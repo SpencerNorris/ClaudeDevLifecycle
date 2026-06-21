@@ -38,9 +38,10 @@
 #   Not opted in → no protected-branch check; the hook is transparent and only
 #   chains to the repo-local hook.
 #
-#   NOTE: GitHub server-side branch protection is the real guarantee for main;
-#   this hook is the local convenience layer that closes the bare-`git push` gap
-#   on repos that opt in.
+#   NOTE: GitHub server-side branch protection is the only *unbypassable* layer for
+#   main (where the plan offers it). This hook is the LOCAL guard — it gates
+#   Claude-initiated pushes to main and closes the bare-`git push` gap on opted-in
+#   repos, and is your primary main-protection where server-side isn't available.
 #
 # ROBUSTNESS NOTES
 #   - `set -u` catches unset-variable bugs. We deliberately avoid `set -e` and

@@ -44,7 +44,7 @@
  *     (c) STOP the workflow (throw EscalationStop), leaving branch + PR in place.
  *   This is the only exit other than success. There is no "try forever" path.
  *
- * MODE: AUTONOMOUS. The human is not in this loop; the reviewer agent is the
+ * MODE: AUTONOMOUS. The human is not in this loop; the review panel is the
  * skeptic and the caps are the safety rail.
  */
 
@@ -66,7 +66,7 @@ export const meta = {
     {
       title: "Review",
       detail:
-        "Invoke the adversarial-reviewer agent with fixed inputs (diff + DoD report + test output). Reject hands the critique back to an implementing agent and retries, capped at K=3. Pass appends the verdict to the DoD report.",
+        "Run the review panel (adversarial + correctness always; security/performance opt-in via reviewers): each reviewer reconstructs the diff and re-runs tests vs the claimed results. A reject hands the aggregated critique back to an implementing agent and retries, capped at K=3. Pass appends the verdicts to the DoD report.",
     },
     {
       title: "Ship",

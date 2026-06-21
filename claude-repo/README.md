@@ -15,7 +15,7 @@ claude-repo/
   CLAUDE.md                 -> <repo>/CLAUDE.md   (the constitution; carries the principles)
   .claude/
     settings.json           permissions (deny main/force; allow tier pushes) + SessionStart hook
-    agents/                 adversarial-reviewer
+    agents/                 review panel: adversarial + correctness (always), security + performance (opt-in)
     workflows/              single-feature-run.js, federated-run.js
     rules/                  path-scoped: code-style, adr-format
     reference/              on-demand process rules (indexed by CLAUDE.md)

@@ -38,8 +38,8 @@ graph TB
         CONST["CLAUDE.md — CONSTITUTION (always-on)<br/>universal stances: DoD · no-shed · tracker<br/>(RULES mechanism · bucket 1)"]
         RULES["rules/*.md — PATH-SCOPED RULES<br/>code-style · adr-format (paths: frontmatter)<br/>(RULES mechanism · bucket 2 · auto-load on matching file)"]
         REF["reference/*.md — ON-DEMAND REFERENCE<br/>DoD detail · no-shed · branch-lifecycle · testing · …<br/>(RULES mechanism · bucket 3 · read via CLAUDE.md index)"]
-        AGENTS["agents/*.md — AGENTS (specialists)<br/>adversarial-reviewer (fixed prompt)"]
-        WF["workflows/*.js — WORKFLOWS<br/>autonomous federated run<br/>(invokes reviewer; caps in code)"]
+        AGENTS["agents/*.md — AGENTS (review panel)<br/>adversarial + correctness (always)<br/>+ security + performance (opt-in)"]
+        WF["workflows/*.js — WORKFLOWS<br/>autonomous federated run<br/>(invokes the review panel; caps in code)"]
         SETT["settings.json — allow/deny<br/>tier allows: push non-main + merge<br/>main denies: push main, --force"]
         MEM["memory/<br/>cross-session facts"]
     end
@@ -177,10 +177,10 @@ flowchart TD
   discipline conversationally, and **the human is the skeptic** (plan approval,
   PR review) — a workflow can't hold that conversation, so it stays main-loop.
   *Autonomous* (drawn here, and the federated run D4): encoded as a **workflow**;
-  the **reviewer agent is the skeptic**; caps + escalation are in code.
+  the **review panel is the skeptic**; caps + escalation are in code.
 - **Gate A** moves up front (authorize the run). The rev-1 mid-flow
   *DoD-acceptance* gate is **gone** in autonomous mode — its skepticism is now
-  the teal reviewer agent. **Gate B** is the `dev→main` PR merge.
+  the teal review panel. **Gate B** is the `dev→main` PR merge.
 - The **plan-approval gate** defaults to user review. In autonomous mode, it can
   be **short-circuited** when the user pre-authorizes plan autonomy at Gate A
   ("come up with your own plan, I trust you"). Trivial tasks skip planning
@@ -191,8 +191,8 @@ flowchart TD
   **autonomous** but **capped at K** (default ~3). Exhaustion triggers
   root-cause diagnosis, then escalation — never an infinite loop, never a shim.
 - **†** In **interactive mode**, these nodes change roles: the plan-approval gate
-  is always human-reviewed (no short-circuit); the adversarial-reviewer agent is
-  replaced by the human at Gate B / PR review.
+  is always human-reviewed (no short-circuit); the review panel is replaced by the
+  human at Gate B / PR review.
 
 ---
 
@@ -228,7 +228,7 @@ flowchart LR
 ## D4 — Federated multi-feature run = one Claude workflow
 
 The capability branch-tier autonomy unlocks. **One workflow** fans out one
-worktree-isolated agent per feature, gates each with the **reviewer agent**
+worktree-isolated agent per feature, gates each with the **review panel**
 before it merges onto the dev branch, then opens a single `dev→main` PR. Retry
 caps + escalation live in the workflow code.
 
@@ -240,9 +240,9 @@ flowchart TD
     SPAWN --> FB["feat B<br/>TDD · validate · DoD"]
     SPAWN --> FC["feat C … ×N<br/>TDD · validate · DoD"]
 
-    FA --> RA[["reviewer agent"]]
-    FB --> RB[["reviewer agent"]]
-    FC --> RC[["reviewer agent"]]
+    FA --> RA[["review panel"]]
+    FB --> RB[["review panel"]]
+    FC --> RC[["review panel"]]
 
     RA -->|"reject + critique (cap K)"| FA
     RB -->|"reject + critique (cap K)"| FB
@@ -278,7 +278,7 @@ flowchart TD
 - D4 **nests** D3 (it is one "Work" iteration) and contains N **cores** of D2
   (implement → validate → DoD → review) run concurrently — not N full D2s. The
   push / PR / CI / Gate-B tail happens **once** for the whole batch.
-- The reviewer agent gates **each feature** before it merges onto dev, so a
+- The review panel gates **each feature** before it merges onto dev, so a
   shimmed feature never reaches the shared branch.
 - Two human touchpoints for the whole batch: **Gate A** (authorize) and **Gate
   B** (merge). Escalation only fires when a cap is exhausted.

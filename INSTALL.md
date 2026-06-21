@@ -146,7 +146,7 @@ gate — but I'd recommend keeping the opt-in. Your call.
   **allow** globs (`feat/*`, etc.) behave as you expect on your version.
 - **The workflows are templates.** `single-feature-run.js` and `federated-run.js`
   are valid (`node --check` passes) and use the real Workflow DSL, but they invoke
-  the GitHub MCP / `gh` and the `adversarial-reviewer` agent at runtime and have
+  the GitHub MCP / `gh` and the review-panel agents at runtime and have
   not been run end-to-end against a live repo. Treat the first real run as a
   shakedown.
 - **On-demand vs always-on is a tradeoff.** Moving the process rules to

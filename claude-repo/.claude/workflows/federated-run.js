@@ -42,10 +42,10 @@
 export const meta = {
   name: "federated-run",
   description:
-    "Autonomous federated multi-feature run (D4): fan out one worktree-isolated agent per feature (TDD -> validate -> DoD), gate each with the adversarial-reviewer agent before it merges onto dev, integrate, then push dev and open ONE dev->main PR with all DoD reports and drive CI green. Every retry loop capped at K=3; per-feature exhaustion escalates that feature, batch CI exhaustion is terminal.",
+    "Autonomous federated multi-feature run (D4): fan out one worktree-isolated agent per feature (TDD -> validate -> DoD), gate each with the review panel (adversarial + correctness always; security/performance opt-in) before it merges onto dev, integrate, then push dev and open ONE dev->main PR with all DoD reports and drive CI green. Every retry loop capped at K=3; per-feature exhaustion escalates that feature, batch CI exhaustion is terminal.",
   phases: [
     { title: "Fan-out", detail: "One worktree-isolated agent per feature runs the D2 core: TDD implement -> validate -> DoD report. Runs concurrently." },
-    { title: "Review", detail: "Gate each feature with the adversarial-reviewer agent before it merges onto dev. Reject retries that feature, capped K=3; exhaustion escalates that feature." },
+    { title: "Review", detail: "Gate each feature with the review panel (adversarial + correctness always; security/performance opt-in) before it merges onto dev. Reject retries that feature, capped K=3; exhaustion escalates that feature." },
     { title: "Integrate", detail: "Merge each reviewed-green feature onto the shared dev branch (serial, conflict-faithful)." },
     { title: "Ship", detail: "Push dev and open ONE dev->main PR aggregating all DoD reports." },
     { title: "CI", detail: "Drive the batch PR's CI green; on red, fix + re-push, capped K=3; exhaustion is terminal for the batch." },
