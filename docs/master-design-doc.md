@@ -441,20 +441,23 @@ flowchart TD
 ## 10 — Enforcement of `main` protection (layered; pick what your repo/plan allows)
 
 Complementary layers, not redundant — use as many as apply. Only the server-side
-layer is truly unbypassable; the local layers prevent **accidental** pushes to
-`main` (a deliberate `git push --no-verify` or an unset `core.hooksPath` gets past
-them).
+layer is truly unbypassable, and it is the only one that guards against *your own*
+accidental push to `main`. The local hook layer gates **Claude-initiated** git
+only — a human in their own terminal is Gate B and pushes/commits freely; it's the
+autonomous-safety guarantee, not a guard on you. (Even for Claude it's best-effort:
+`git push --no-verify` or an unset `core.hooksPath` gets past it.)
 
 1. **GitHub server-side branch protection on `main`** — the only *unbypassable*
    layer (GitHub enforces it, not your machine): require PR + ≥1 approval; block
    direct/force pushes. The strongest guarantee **where your plan offers it** —
    protected branches on *private* repos require a paid GitHub plan. Set it
    wherever you can; one-time admin setup per repo.
-2. **Global `pre-push` hook** (opted-in repos): rejects any push whose remote ref
-   is `main`/`master`, in any command form — so it closes the bare-`git push` gap.
-   **Where server-side protection isn't available, this is your primary
-   `main`-protection.** Chains to the repo-local pre-push hook (global
-   `core.hooksPath` shadows it otherwise).
+2. **Global `pre-push` hook** (opted-in repos; **Claude-initiated** pushes only):
+   rejects any push by Claude whose remote ref is `main`/`master`, in any command
+   form — closing the bare-`git push` gap *for the agent*. **Where server-side
+   protection isn't available, this is your primary defense against Claude reaching
+   `main`** (a human push to `main` is intentionally allowed). Chains to the
+   repo-local pre-push hook (global `core.hooksPath` shadows it otherwise).
 3. **Global `settings.json`** (defense-in-depth): allow `git push` for tier
    branches (`dev/*`, `feat/*`, `fix/*`, `chore/*`, `integration/*`); deny `git
    push origin main`, `--force`, `-f`; pre-commit guard against committing on

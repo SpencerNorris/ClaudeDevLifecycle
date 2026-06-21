@@ -77,8 +77,9 @@ GitHub issue) and **Gate B** (merge the `dev→main` PR). Enforcement is mechani
 and **opt-in per repo** — activate it by ANY of: a `.claude/branch-tier` file at
 the repo root, `CLAUDE_BRANCH_TIER=1`, or `git config claude.branchTier true`.
 
-- **Hooks** (`~/.claude/git-hooks/`, enabled by `core.hooksPath`): block direct
-  commits/pushes to `main`/`master` and block forbidden tracker filenames.
+- **Hooks** (`~/.claude/git-hooks/`, enabled by `core.hooksPath`): block
+  *Claude-initiated* direct commits/pushes to `main`/`master` and forbidden tracker
+  filenames. A human in their own terminal (Gate B) is unaffected.
 - **Settings** (`~/.claude/settings.json`): allow tier pushes + `git merge`; deny
   main and force pushes.
 - **Agent** (`~/.claude/agents/adversarial-reviewer.md`): the refute-first skeptic

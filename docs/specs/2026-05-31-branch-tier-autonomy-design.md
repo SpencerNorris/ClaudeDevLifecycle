@@ -156,15 +156,19 @@ own homework.**
 
 ## 8. Enforcement of `main` protection (layered; pick what your repo/plan allows)
 
-Complementary layers — only the server-side one is unbypassable; the local layers
-stop **accidental** pushes to `main`, not a deliberate `--no-verify`.
+Complementary layers — only the server-side one is unbypassable, and it alone
+guards a *human's* accidental push. The local hook layer gates **Claude-initiated**
+git only (a human is Gate B and pushes freely); even for Claude it's best-effort
+(a deliberate `--no-verify` gets past it).
 
 1. **GitHub server-side branch protection on `main`** — the only *unbypassable*
    layer: require PR + ≥1 approval; block direct/force pushes. Strongest **where
    the plan offers it** (protected branches on private repos need a paid plan).
-2. **Global `pre-push` hook** (opted-in repos): rejects any push whose remote ref
-   is `main`/`master`, in any command form — closes the bare-`git push` gap.
-   **Where server-side protection is unavailable, this is the primary guard.**
+2. **Global `pre-push` hook** (opted-in repos; **Claude-initiated** pushes only):
+   rejects any push by Claude whose remote ref is `main`/`master`, in any command
+   form — closes the bare-`git push` gap for the agent. **Where server-side
+   protection is unavailable, this is the primary guard against Claude reaching
+   `main`** (a human push is intentionally allowed).
 3. **Global `settings.json`** (defense-in-depth): allow `git push origin <tier>/*`
    + `git merge`; deny `git push origin main`, `--force`, `-f`; pre-commit guard
    against committing on `main`. Can't catch a bare `git push`; that's layer 2.

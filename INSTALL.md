@@ -112,8 +112,9 @@ noise or would clobber live state:
    ```bash
    touch .claude/branch-tier      # or: export CLAUDE_BRANCH_TIER=1   # or: git config claude.branchTier true
    ```
-   Only then do the hooks block direct commits/pushes to `main` and forbidden
-   tracker files in that repo.
+   Only then do the hooks act — and only on *Claude-initiated* git: they block
+   Claude's direct commits/pushes to `main` and tracker files in that repo. You,
+   in your own terminal, commit and push to `main` freely (you're Gate B).
 
 6. **Set GitHub branch protection on `main`** where your plan allows it — the only
    *unbypassable* layer (require a PR + ≥1 approval, block direct/force pushes;

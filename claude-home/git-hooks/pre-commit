@@ -12,7 +12,8 @@
 #
 # WHAT IT DOES
 #   1. (ALWAYS) If we are not inside a git repo, exit 0 immediately.
-#   2. (OPT-IN ONLY) Enforce two branch-tier invariants:
+#   2. (OPT-IN + CLAUDE-INITIATED ONLY) Enforce two branch-tier invariants on
+#      Claude's own commits (a human in their own terminal is Gate B, unaffected):
 #        a. Reject staged forbidden tracker files (NEXT_STEPS.md, TODO.md, …) —
 #           these belong in GitHub Issues, not committed markdown.
 #        b. Reject commits made while a protected branch (main/master) is checked

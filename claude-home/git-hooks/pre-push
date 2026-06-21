@@ -15,8 +15,9 @@
 #      chained hook).
 #   2. (ALWAYS) If we are not inside a git repo, replay stdin to any repo-local
 #      hook and exit; otherwise exit 0.
-#   3. (OPT-IN ONLY) Reject the push if any updated remote ref names a protected
-#      branch (refs/heads/main or refs/heads/master, per GIT_PROTECTED_BRANCHES).
+#   3. (OPT-IN + CLAUDE-INITIATED ONLY) Reject the push if any updated remote ref
+#      names a protected branch (refs/heads/main or refs/heads/master, per
+#      GIT_PROTECTED_BRANCHES). Only Claude's pushes are gated; a human pushes free.
 #   4. (ALWAYS) Chain to the repo-local pre-push hook if one exists, replaying the
 #      captured stdin to it, because a global core.hooksPath SHADOWS .git/hooks/*.
 #
