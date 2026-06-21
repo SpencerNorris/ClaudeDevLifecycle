@@ -80,8 +80,10 @@ GitHub issue) and **Gate B** (merge the `dev→main` PR). Never commit or push t
   `git push origin main`/`master` and force pushes, allows tier pushes
   (`dev/feat/fix/chore/integration/*`) + `git merge`. Applies to Claude in **both
   local and cloud** runs.
-- **Agent** (`.claude/agents/adversarial-reviewer.md`): the refute-first skeptic
-  that gates a feature after its DoD report, before push/merge.
+- **Agents — the review panel** (`.claude/agents/`): gate each feature after its DoD
+  report, before push/merge. Always: `adversarial-reviewer` (no shims/dishonest DoD)
+  + `correctness-reviewer` (real logic/edge bugs). Opt-in per project (the run's
+  `reviewers` arg): `security-reviewer`, `performance-reviewer`.
 - **Workflows** (`.claude/workflows/`): `single-feature-run.js` (D2) and
   `federated-run.js` (D4) run the autonomous cycle with the reviewer gate and
   K-capped retry loops that escalate (never loop forever, never shim).

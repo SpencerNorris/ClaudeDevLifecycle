@@ -24,7 +24,10 @@ claude-home/
     definition-of-done.md  no-shed.md  branch-lifecycle.md       # the rev-3 design rules
     architecture.md  documentation.md  testing.md  workflow.md  workflow-autonomy.md   # your existing process rules
   agents/
-    adversarial-reviewer.md      # the refute-first review agent (the autonomous skeptic)
+    adversarial-reviewer.md      # review panel: refute-first (shims / DoD honesty)
+    correctness-reviewer.md      #   + correctness (real logic/edge bugs) — always-on
+    security-reviewer.md         #   + security — opt-in per project (run's reviewers arg)
+    performance-reviewer.md      #   + performance — opt-in per project
   workflows/
     single-feature-run.js        # D2 autonomous cycle as a workflow
     federated-run.js             # D4 federated multi-feature run

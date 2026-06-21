@@ -35,7 +35,7 @@ CLAUDE.md          Always-on constitution: principle-lines + a load index.
 settings.json      Settings + branch-tier permissions.
 rules/             Path-scoped rules (auto-load on matching files): code-style, adr-format.
 reference/         On-demand process rules (read when a trigger matches).
-agents/            adversarial-reviewer — the refute-first review gate.
+agents/            review panel: adversarial + correctness (always), security + performance (opt-in).
 workflows/         single-feature-run.js (D2), federated-run.js (D4).
 git-hooks/         pre-commit, pre-push — branch-tier enforcement, opt-in per repo.
 hooks/             bootstrap-check.sh (SessionStart).

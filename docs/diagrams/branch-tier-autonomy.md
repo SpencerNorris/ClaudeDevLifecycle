@@ -139,7 +139,7 @@ flowchart TD
     JG -->|no| E
     JG -->|yes| K["Claude: DoD report<br/>with transcript"]
 
-    K --> REV[["† Adversarial review (AGENT)<br/>refute shims · weakened tests ·<br/>cast-to-None · verify DoD honesty"]]
+    K --> REV[["† Review panel (AGENTS)<br/>adversarial: shims · dishonest DoD<br/>correctness: logic · edges · (sec/perf opt-in)"]]
     REV -->|"reject + critique"| E
     REV -->|pass| L["Claude: push branch<br/>(non-main)"]
 

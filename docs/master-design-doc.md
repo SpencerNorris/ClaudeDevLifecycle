@@ -250,7 +250,7 @@ flowchart TD
     JG -->|no| E
     JG -->|yes| K["Claude: DoD report<br/>with transcript"]
 
-    K --> REV[["† Adversarial review (AGENT)<br/>refute shims · weakened tests ·<br/>cast-to-None · verify DoD honesty"]]
+    K --> REV[["† Review panel (AGENTS)<br/>adversarial: shims · dishonest DoD<br/>correctness: logic · edges · (sec/perf opt-in)"]]
     REV -->|"reject + critique"| E
     REV -->|pass| L["Claude: push branch<br/>(non-main)"]
 
@@ -395,24 +395,34 @@ flowchart TD
 
 ---
 
-## 8 — Adversarial review (the autonomous skeptic)
+## 8 — The review panel (the autonomous skeptics)
 
-- **What:** a fixed-prompt **agent** (`~/.claude/agents/adversarial-reviewer`).
-  Refute-first. Input: the diff + the DoD report + test output. Output: a
-  structured verdict (pass / fail + specific findings). Hunts for skipped or
-  weakened tests, `try/except pass`, hardcoded returns, cast-to-`None`, narrowed
-  assertions, unaddressed root cause, missing named edge cases, and **dishonest
-  DoD claims** (does the report match the actual test output?).
-- **Where:** a **mandatory stage in the autonomous workflow**, after validation
-  + DoD report, before push/integrate. Reject → back to implementation **with
-  the critique** (autonomous retry, subject to the cap). In the federated run it
-  runs **per feature**, before that feature merges onto the dev branch.
-- **Why mechanical, not a rule:** the implementer must not be trusted to summon
-  and honestly report its own critic. The **workflow** invokes the reviewer with
-  fixed inputs; the implementer cannot skip or game it.
-- **Interactive mode:** the **human** plays this role at Gate B / PR review.
-  (The agent may optionally be invoked as a courtesy pre-check, but when a human
-  is present the human is the real reviewer.)
+The review stage is a **panel of fixed-prompt agents** (`~/.claude/agents/`), run in
+parallel and each handed the **same independently-derived evidence** (each
+reconstructs the real diff via `git diff <base>...HEAD` and re-runs what it needs —
+not the implementer's self-report). A feature passes only when **every** dispatched
+reviewer passes; any reject hands the **aggregated** critique back to implementation.
+
+- **Always on — two lenses:**
+  - `adversarial-reviewer` — *did the implementer cheat?* Refute-first: skipped or
+    weakened tests, `try/except pass`, hardcoded returns, cast-to-`None`, narrowed
+    assertions, unaddressed root cause, missing named edge cases, and **dishonest
+    DoD claims** (does the report match the actual test output?).
+  - `correctness-reviewer` — *is the code actually right?* Traces the logic for real
+    bugs the tests never exercised: logic errors, boundary/edge cases, null/empty
+    mishandling, mishandled error paths, races, contract violations. Passing tests
+    is not correctness.
+- **Discretionary — opt in per project** (via the run's `reviewers` arg, defaulted
+  from the repo's `CLAUDE.md`): `security-reviewer` and `performance-reviewer`. Off
+  by default, so a stats-analysis repo gets no security gate it does not need.
+- **Where:** a **mandatory stage in the autonomous workflow**, after validation +
+  DoD report, before push/integrate; per feature in the federated run. Reject → back
+  to implementation **with the aggregated critique** (autonomous retry, under the cap).
+- **Why mechanical, not a rule:** the implementer must not be trusted to summon and
+  honestly report its own critics. The **workflow** invokes them with fixed inputs;
+  the implementer cannot skip or game them. All reviewers are read-only.
+- **Interactive mode:** the **human** plays this role at Gate B / PR review (and may
+  run `/code-review` for a deep pass). When a human is present they are the real reviewer.
 - **Verdict persistence:** reject verdicts are transient — passed directly to
   the implementing agent as retry context (the critique is the input). The
   **passing verdict** is appended to the DoD report as a `## Reviewer Verdict`
@@ -525,7 +535,7 @@ split: `reference/` loads on-demand (see §1).**
 | Local CI pre-check | Optionally runs `act` | — |
 | Smoke test | Playwright / curl / CLI exercise + named edges + failure modes | — |
 | DoD report | Writes report with required transcript | — (autonomous) or reviews (interactive) |
-| Adversarial review | Reviewer agent invoked with fixed inputs (autonomous) | Reviews PR at Gate B (interactive) |
+| Review panel | Reviewer agents (adversarial + correctness; security/perf opt-in) invoked with fixed inputs (autonomous) | Reviews PR at Gate B, e.g. `/code-review` (interactive) |
 | Push | Pushes non-`main` branch | — |
 | PR open | Opens via GitHub MCP | — |
 | CI monitoring | Reads logs via MCP, commits fixes (capped at K) | — |

@@ -80,21 +80,9 @@ const VERDICT_SCHEMA = {
         additionalProperties: false,
         required: ["category", "severity", "detail"],
         properties: {
-          category: {
-            type: "string",
-            enum: [
-              "weakened-test",
-              "skipped-test",
-              "swallowed-exception",
-              "hardcoded-return",
-              "cast-to-none",
-              "narrowed-assertion",
-              "unaddressed-root-cause",
-              "missing-edge-case",
-              "dishonest-dod",
-              "other",
-            ],
-          },
+          // Free-form so any reviewer (shim / correctness / security / performance)
+          // can use its own category vocabulary.
+          category: { type: "string", minLength: 1 },
           severity: { type: "string", enum: ["blocking", "minor"] },
           detail: { type: "string", minLength: 1 },
           location: { type: "string" },
@@ -104,6 +92,79 @@ const VERDICT_SCHEMA = {
     verdictSection: { type: "string" },
   },
 };
+
+// ---------------------------------------------------------------------------
+// REVIEW PANEL. The adversarial + correctness reviewers ALWAYS run; security and
+// performance are DISCRETIONARY — opt in per project via args.reviewers (e.g.
+// ["security"]), defaulted from the repo's CLAUDE.md. Each reviewer is handed the
+// SAME independently-derived evidence and returns the shared VERDICT_SCHEMA, run in
+// parallel. A feature passes review only when EVERY dispatched reviewer passes; on
+// any reject, the aggregated critique becomes the retry context.
+// ---------------------------------------------------------------------------
+const ALWAYS_REVIEWERS = ["adversarial-reviewer", "correctness-reviewer"];
+const OPTIONAL_REVIEWERS = { security: "security-reviewer", performance: "performance-reviewer" };
+
+function selectedReviewers() {
+  const extra = args && Array.isArray(args.reviewers) ? args.reviewers : [];
+  const optional = extra
+    .map((r) => OPTIONAL_REVIEWERS[String(r).toLowerCase()])
+    .filter(Boolean);
+  return ALWAYS_REVIEWERS.concat(optional).filter((v, i, a) => a.indexOf(v) === i);
+}
+
+function reviewFocus(agentType) {
+  if (agentType === "adversarial-reviewer")
+    return "You are the ADVERSARIAL reviewer. Refute-first: PROVE this is not actually done. Hunt for skipped/weakened tests, swallowed errors, hardcoded/stubbed returns, cast-to-None, narrowed assertions, unaddressed root cause, missing named edge cases, and dishonest DoD claims; re-run the suite/smoke yourself and compare to the CLAIMED results.";
+  if (agentType === "correctness-reviewer")
+    return "You are the CORRECTNESS reviewer. Trace the real code and find logic errors, bad boundary/edge handling, null/empty mishandling, mishandled error paths, races, and contract/invariant violations. Passing tests is not correctness.";
+  if (agentType === "security-reviewer")
+    return "You are the SECURITY reviewer. Trace untrusted-data flow and find real, exploitable defects (injection, broken authz/IDOR, secret/crypto misuse, missing validation/encoding, data exposure, unsafe config). Name the attack path.";
+  if (agentType === "performance-reviewer")
+    return "You are the PERFORMANCE reviewer. Find real defects that bite at realistic scale (accidental O(n^2), N+1/per-iteration I/O, unbounded growth, redundant work, resource leaks). Name the triggering scale.";
+  return "Review this change and return the structured verdict.";
+}
+
+async function runReviewPanel(runLabel, branch, base, dod) {
+  const evidence =
+    "\n\nBranch under review: " + branch + "  (base: " + base + ")\n" +
+    "DERIVE GROUND TRUTH YOURSELF — reconstruct the real diff with `git diff " + base +
+    "...HEAD` on branch '" + branch + "' and read the actual code; do not trust any self-reported " +
+    "file list. Where your lens needs test results, re-run them yourself and compare to the CLAIMED results.\n" +
+    "CLAIMED test output (verify, do not trust): unit=" + dod.tests.unit + " | integration=" +
+    dod.tests.integration + " | regression=" + dod.tests.regression + " | lint=" + dod.tests.lint +
+    " | typecheck=" + dod.tests.typecheck + "\n\nCLAIMED DoD report:\n" + dod.report;
+
+  const results = (
+    await parallel(
+      selectedReviewers().map((agentType) => () =>
+        agent(
+          runLabel + " REVIEW (master-design-doc.md §8, spec §5). " + reviewFocus(agentType) +
+            " Return verdict 'pass' only if you found no blocking finding; otherwise 'reject' with specific " +
+            "findings (each naming the triggering case/path and the required fix). On pass, return a short " +
+            "`verdictSection` (markdown)." + evidence,
+          { label: agentType, phase: "Review", agentType: agentType, schema: VERDICT_SCHEMA }
+        ).then((v) => ({ agentType: agentType, v: v }))
+      )
+    )
+  ).filter(Boolean);
+
+  const rejected = results.filter((r) => r.v && r.v.verdict === "reject");
+  if (rejected.length === 0) {
+    const verdictSection = results
+      .map((r) => (r.v && r.v.verdictSection) ? r.v.verdictSection : "## Reviewer Verdict\nPASS — " + r.agentType + ".")
+      .join("\n\n");
+    return { pass: true, verdictSection: verdictSection };
+  }
+  const critique = rejected
+    .map((r) =>
+      "### " + r.agentType + "\n" + (r.v.summary || "") + "\n" +
+      (r.v.findings || [])
+        .map((f) => "- [" + f.severity + "] " + f.category + (f.location ? " @ " + f.location : "") + ": " + f.detail)
+        .join("\n")
+    )
+    .join("\n\n");
+  return { pass: false, critique: critique, rejectedBy: rejected.map((r) => r.agentType).join(", ") };
+}
 
 // The DoD report payload (reference/definition-of-done.md report contract).
 const DOD_SCHEMA = {
@@ -349,56 +410,18 @@ async function processFeature(feature, devBranch) {
       continue; // counter-controlled
     }
 
-    // ---- ADVERSARIAL REVIEW (mandatory skeptic, per feature) --------------
-    const verdict = await agent(
-      "AUTONOMOUS federated run, REVIEW for feature '" +
-        feature.title +
-        "' (master-design-doc.md §8, spec §5). You are the adversarial reviewer. Refute-first: try to PROVE this " +
-        "feature is not actually done. Hunt for skipped/weakened tests, try/except pass, hardcoded returns, " +
-        "cast-to-None, narrowed assertions, unaddressed root cause, missing named edge cases, and dishonest DoD claims.\n\n" +
-        "DERIVE GROUND TRUTH YOURSELF — do not trust the report's self-stated results:\n" +
-        "  1. Reconstruct the real diff with `git diff " +
-        devBranch +
-        "...HEAD` on branch '" +
-        ctx.branch +
-        "'; review the REAL diff, not any self-reported file list.\n" +
-        "  2. Re-run the suite (unit/integration/regression/lint/type-check) and the smoke steps yourself, and " +
-        "COMPARE your observed output to the CLAIMED results below. Any mismatch is a `dishonest-dod` blocking finding.\n\n" +
-        "Return verdict 'pass' only if you INDEPENDENTLY reproduced green AND found no blocking finding; " +
-        "otherwise 'reject' with specific findings. On pass, return a verdictSection (markdown, stating WHAT you re-ran) to append to the DoD report.\n\n" +
-        "Branch under review: " +
-        ctx.branch +
-        "  (base: " +
-        devBranch +
-        ")\nCLAIMED test output (the report's self-stated results — verify, do not trust):\n" +
-        "  unit: " +
-        dod.tests.unit +
-        "\n  integration: " +
-        dod.tests.integration +
-        "\n  regression: " +
-        dod.tests.regression +
-        "\n  lint: " +
-        dod.tests.lint +
-        "\n  typecheck: " +
-        dod.tests.typecheck +
-        "\n\nCLAIMED DoD report:\n" +
-        dod.report,
-      { label: tag + ":review", phase: "Review", agentType: "adversarial-reviewer", schema: VERDICT_SCHEMA }
+    // ---- REVIEW PANEL (adversarial + correctness always; security/perf opt-in) ----
+    const review = await runReviewPanel(
+      "AUTONOMOUS federated run, feature '" + feature.title + "',",
+      ctx.branch,
+      devBranch,
+      dod
     );
 
-    if (verdict.verdict === "reject") {
-      const critique =
-        verdict.summary +
-        "\n" +
-        verdict.findings
-          .map(function (f) {
-            return (
-              "- [" + f.severity + "] " + f.category + (f.location ? " @ " + f.location : "") + ": " + f.detail
-            );
-          })
-          .join("\n");
-      ctx.failureContext = "Adversarial reviewer rejected on attempt " + attempt + ":\n" + critique;
-      log(tag + ": reviewer REJECTED on attempt " + attempt + ".");
+    if (!review.pass) {
+      ctx.failureContext =
+        "Review panel rejected on attempt " + attempt + " (by: " + review.rejectedBy + "):\n" + review.critique;
+      log(tag + ": review REJECTED on attempt " + attempt + " by " + review.rejectedBy + ".");
 
       if (attempt === K) {
         await postEscalation("Review", attempt, ctx, tag);
@@ -408,25 +431,22 @@ async function processFeature(feature, devBranch) {
       impl = await agent(
         "AUTONOMOUS federated run, back to IMPLEMENT for feature '" +
           feature.title +
-          "' after an ADVERSARIAL-REVIEW reject. Address every blocking finding by fixing the ROOT CAUSE. " +
-          "Do NOT weaken tests or shim to satisfy the reviewer.\n\n" +
+          "' after a REVIEW reject. Address EVERY blocking finding by fixing the ROOT CAUSE. " +
+          "Do NOT weaken tests or shim to satisfy a reviewer.\n\n" +
           "Branch: " +
           ctx.branch +
           "\nReviewer critique:\n" +
-          critique,
+          review.critique,
         { label: tag + ":reimplement", phase: "Fan-out", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
       );
       ctx.branch = impl.branch;
       continue; // counter-controlled
     }
 
-    // PASS — persist the verdict into the DoD report (spec §5).
-    const verdictSection =
-      verdict.verdictSection ||
-      "## Reviewer Verdict\n\nPASS — adversarial-reviewer.\n\n" + verdict.summary;
-    dodReport = dod.report + "\n\n" + verdictSection;
+    // PASS — every dispatched reviewer passed. Persist their verdicts (spec §5).
+    dodReport = dod.report + "\n\n" + review.verdictSection;
     reviewed = true;
-    log(tag + ": reviewer PASSED on attempt " + attempt + ". Reviewed-green.");
+    log(tag + ": review panel PASSED on attempt " + attempt + ". Reviewed-green.");
   }
 
   if (!reviewed || !dodReport) {
