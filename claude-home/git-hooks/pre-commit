@@ -88,7 +88,16 @@ branch_tier_opted_in() {
     return 1
 }
 
-if branch_tier_opted_in; then
+# Gate enforcement to CLAUDE-initiated git only. A human in their own terminal is
+# the Gate-B authority and commits/pushes freely — only the autonomous agent is
+# constrained here. Claude Code sets CLAUDECODE in the environment of every command
+# it runs, which this hook (a child process of git) inherits; a normal human shell
+# does not. So: enforce when opted in AND the commit was initiated by Claude.
+claude_initiated() {
+    [ -n "${CLAUDECODE:-}" ]
+}
+
+if branch_tier_opted_in && claude_initiated; then
     # -----------------------------------------------------------------------
     # Step 2a — Reject staged forbidden tracker files.
     #
