@@ -27,10 +27,12 @@ claude-repo/
 Copy into the target repo and commit:
 
 ```bash
-cp -a claude-repo/CLAUDE.md  <repo>/CLAUDE.md
-cp -a claude-repo/.claude    <repo>/.claude
-cd <repo>
-git add CLAUDE.md .claude && git commit -m "Add Claude Code governance config"
+SRC=/path/to/ClaudeDevLifecycle     # this repo (where claude-repo/ lives)
+DEST=/path/to/your-repo             # the repo you want to govern
+
+cp -a "$SRC/claude-repo/CLAUDE.md"  "$DEST/CLAUDE.md"
+cp -a "$SRC/claude-repo/.claude"    "$DEST/.claude"
+cd "$DEST" && git add CLAUDE.md .claude && git commit -m "Add Claude Code governance config"
 ```
 
 Then set GitHub server-side branch protection on `main` where your plan allows it
