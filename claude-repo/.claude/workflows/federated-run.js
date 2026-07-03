@@ -63,10 +63,12 @@ const NEEDS_HUMAN_LABEL = "needs-human";
 // Harness-boundary guards (#76).
 //
 // The Workflow harness can deliver `args` as a JSON STRING rather than a parsed
-// object; field reads off the raw string silently yield undefined and fail the
-// input checks. Normalize once; every reader below uses RUN_ARGS.
+// object, or omit it entirely (undefined/null). Field reads off the raw string
+// silently yield undefined; field reads off undefined throw a bare TypeError
+// instead of the helpful Gate A error. Normalize once to an OBJECT; every
+// reader below uses RUN_ARGS and missing inputs fail the input checks.
 // ---------------------------------------------------------------------------
-const RUN_ARGS = typeof args === "string" ? JSON.parse(args) : args;
+const RUN_ARGS = (typeof args === "string" ? JSON.parse(args) : args) || {};
 
 // agent() returns null when a subagent dies on a terminal error (e.g. a
 // usage-limit interruption). Dereferencing a null structured result crashes the
@@ -125,7 +127,7 @@ const ALWAYS_REVIEWERS = ["adversarial-reviewer", "correctness-reviewer"];
 const OPTIONAL_REVIEWERS = { security: "security-reviewer", performance: "performance-reviewer" };
 
 function selectedReviewers() {
-  const extra = RUN_ARGS && Array.isArray(RUN_ARGS.reviewers) ? RUN_ARGS.reviewers : [];
+  const extra = Array.isArray(RUN_ARGS.reviewers) ? RUN_ARGS.reviewers : [];
   const optional = extra
     .map((r) => OPTIONAL_REVIEWERS[String(r).toLowerCase()])
     .filter(Boolean);
@@ -502,8 +504,8 @@ async function processFeature(feature, devBranch) {
 // MAIN FLOW (module top level — no run() wrapper; the DSL executes the body).
 // ===========================================================================
 
-const features = RUN_ARGS && RUN_ARGS.features;
-const devBranch = RUN_ARGS && (RUN_ARGS.devBranch || RUN_ARGS.branch);
+const features = RUN_ARGS.features;
+const devBranch = RUN_ARGS.devBranch || RUN_ARGS.branch;
 
 if (!features || !Array.isArray(features) || features.length === 0) {
   throw new Error("federated-run requires args.features (a non-empty array of { id, title, issue }).");
