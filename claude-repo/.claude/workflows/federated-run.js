@@ -60,6 +60,26 @@ const K = 3;
 const NEEDS_HUMAN_LABEL = "needs-human";
 
 // ---------------------------------------------------------------------------
+// Harness-boundary guards (#76).
+//
+// The Workflow harness can deliver `args` as a JSON STRING rather than a parsed
+// object; field reads off the raw string silently yield undefined and fail the
+// input checks. Normalize once; every reader below uses RUN_ARGS.
+// ---------------------------------------------------------------------------
+const RUN_ARGS = typeof args === "string" ? JSON.parse(args) : args;
+
+// agent() returns null when a subagent dies on a terminal error (e.g. a
+// usage-limit interruption). Dereferencing a null structured result crashes the
+// whole workflow with a bare TypeError; guard every such site so the failure is
+// explicit and the run stays cleanly resumable (#76).
+function requireAgentResult(result, what) {
+  if (!result) {
+    throw new Error(what + " agent died without returning a result (likely a usage-limit interruption) — resume the run to retry.");
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // JSON Schemas (plain JS objects) forcing structured agent returns, so control
 // flow branches on data rather than on free text an agent could fudge. These
 // mirror single-feature-run.js (one shared contract across both workflows).
@@ -105,7 +125,7 @@ const ALWAYS_REVIEWERS = ["adversarial-reviewer", "correctness-reviewer"];
 const OPTIONAL_REVIEWERS = { security: "security-reviewer", performance: "performance-reviewer" };
 
 function selectedReviewers() {
-  const extra = args && Array.isArray(args.reviewers) ? args.reviewers : [];
+  const extra = RUN_ARGS && Array.isArray(RUN_ARGS.reviewers) ? RUN_ARGS.reviewers : [];
   const optional = extra
     .map((r) => OPTIONAL_REVIEWERS[String(r).toLowerCase()])
     .filter(Boolean);
@@ -148,9 +168,26 @@ async function runReviewPanel(runLabel, branch, base, dod) {
     )
   ).filter(Boolean);
 
-  const rejected = results.filter((r) => r.v && r.v.verdict === "reject");
+  // An incomplete panel must never pass: a dead reviewer (null result) is not a
+  // pass-by-absence. Without this, a panel whose reviewers all die (e.g. on a
+  // usage-limit cap) has zero rejections and the feature vacuously "passes"
+  // review that never happened (#76).
+  const expected = selectedReviewers().length;
+  const valid = results.filter((r) => r.v && r.v.verdict);
+  if (valid.length < expected) {
+    return {
+      pass: false,
+      critique:
+        "### review-infrastructure\nOnly " + valid.length + " of " + expected +
+        " reviewers returned a verdict (reviewer agent death, likely a usage-limit interruption). " +
+        "An incomplete panel can never pass; the panel must re-run.",
+      rejectedBy: "incomplete-panel(" + valid.length + "/" + expected + ")",
+    };
+  }
+
+  const rejected = valid.filter((r) => r.v.verdict === "reject");
   if (rejected.length === 0) {
-    const verdictSection = results
+    const verdictSection = valid
       .map((r) => (r.v && r.v.verdictSection) ? r.v.verdictSection : "## Reviewer Verdict\nPASS — " + r.agentType + ".")
       .join("\n\n");
     return { pass: true, verdictSection: verdictSection };
@@ -358,6 +395,7 @@ async function processFeature(feature, devBranch) {
       "\n\nReturn the branch you created and a summary.",
     { label: tag + ":implement", phase: "Fan-out", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
   );
+  requireAgentResult(impl, "IMPLEMENT");
   ctx.branch = impl.branch;
 
   let reviewed = false;
@@ -383,12 +421,14 @@ async function processFeature(feature, devBranch) {
       { label: tag + ":validate", phase: "Fan-out", schema: DOD_SCHEMA }
     );
 
-    if (!dod.gatesPass || !dod.smokeAllPass) {
+    if (!dod || !dod.gatesPass || !dod.smokeAllPass) {
       ctx.failureContext =
         "Validation/DoD failed on attempt " +
         attempt +
         ". " +
-        (dod.failureContext || "Gates or smoke cases did not pass.");
+        (dod
+          ? (dod.failureContext || "Gates or smoke cases did not pass.")
+          : "VALIDATE agent died without returning a DoD result (likely a usage-limit interruption); re-run required.");
       log(tag + ": validation failed on attempt " + attempt + ".");
 
       if (attempt === K) {
@@ -406,6 +446,7 @@ async function processFeature(feature, devBranch) {
           ctx.failureContext,
         { label: tag + ":reimplement", phase: "Fan-out", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
       );
+      requireAgentResult(impl, "IMPLEMENT");
       ctx.branch = impl.branch;
       continue; // counter-controlled
     }
@@ -439,6 +480,7 @@ async function processFeature(feature, devBranch) {
           review.critique,
         { label: tag + ":reimplement", phase: "Fan-out", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
       );
+      requireAgentResult(impl, "IMPLEMENT");
       ctx.branch = impl.branch;
       continue; // counter-controlled
     }
@@ -460,8 +502,8 @@ async function processFeature(feature, devBranch) {
 // MAIN FLOW (module top level — no run() wrapper; the DSL executes the body).
 // ===========================================================================
 
-const features = args && args.features;
-const devBranch = args && (args.devBranch || args.branch);
+const features = RUN_ARGS && RUN_ARGS.features;
+const devBranch = RUN_ARGS && (RUN_ARGS.devBranch || RUN_ARGS.branch);
 
 if (!features || !Array.isArray(features) || features.length === 0) {
   throw new Error("federated-run requires args.features (a non-empty array of { id, title, issue }).");
@@ -539,7 +581,7 @@ const integrationManifest = green
   .map((o) => "- " + o.feature.id + " (" + o.feature.title + ") on branch " + o.branch)
   .join("\n");
 
-await agent(
+requireAgentResult(await agent(
   "AUTONOMOUS federated run, INTEGRATE phase (master-design-doc.md §7). Merge each reviewed-green feature branch " +
     "onto the shared dev branch '" +
     devBranch +
@@ -549,7 +591,7 @@ await agent(
     integrationManifest +
     "\n\nDo NOT touch main. Do NOT open a PR yet (that is the Ship phase).",
   { label: "integrate", phase: "Integrate" }
-);
+), "INTEGRATE");
 
 // ---- PHASE 4: Ship — ONCE for the whole batch ------------------------------
 phase("Ship");
@@ -557,7 +599,7 @@ const combinedReports = green
   .map((o) => "### Feature: " + o.feature.title + " (" + o.feature.id + ")\n\n" + o.dodReport)
   .join("\n\n---\n\n");
 
-const ship = await agent(
+const ship = requireAgentResult(await agent(
   "AUTONOMOUS federated run, SHIP phase (master-design-doc.md §7). Push the NON-MAIN dev branch '" +
     devBranch +
     "' (never push main — the pre-push hook + settings forbid it) and open exactly ONE dev->main pull request " +
@@ -565,7 +607,7 @@ const ship = await agent(
     "with its appended Reviewer Verdict). Return the PR URL.\n\nAggregated DoD reports (PR body):\n" +
     combinedReports,
   { label: "push-and-open-pr", phase: "Ship", schema: SHIP_SCHEMA }
-);
+), "SHIP");
 
 const batchCtx = { issue: devBranch, branch: devBranch, prUrl: ship.prUrl, failureContext: "" };
 log("dev pushed and ONE dev->main PR opened for the batch: " + ship.prUrl);
@@ -587,7 +629,9 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
         " (dev branch '" +
         devBranch +
         "') via the GitHub MCP server. Return 'green' if all required checks passed, 'red' if a required check " +
-        "failed (include failing job names + a short log excerpt), 'pending' if still running.",
+        "failed (include failing job names + a short log excerpt), 'pending' if still running. " +
+        "If the PR reports no checks at all (the repository has no CI configured), that counts as 'green' — " +
+        "do not wait for checks that will never start.",
       { label: "poll-ci", phase: "CI", schema: CI_SCHEMA }
     );
     if (ci.status === "green" || ci.status === "red") {
