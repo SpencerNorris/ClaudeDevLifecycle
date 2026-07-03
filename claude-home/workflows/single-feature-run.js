@@ -89,6 +89,26 @@ const K = 3;
 const NEEDS_HUMAN_LABEL = "needs-human";
 
 // ---------------------------------------------------------------------------
+// Harness-boundary guards (#76).
+//
+// The Workflow harness can deliver `args` as a JSON STRING rather than a parsed
+// object; field reads off the raw string silently yield undefined and fail the
+// input checks. Normalize once; every reader below uses RUN_ARGS.
+// ---------------------------------------------------------------------------
+const RUN_ARGS = typeof args === "string" ? JSON.parse(args) : args;
+
+// agent() returns null when a subagent dies on a terminal error (e.g. a
+// usage-limit interruption). Dereferencing a null structured result crashes the
+// whole workflow with a bare TypeError; guard every such site so the failure is
+// explicit and the run stays cleanly resumable (#76).
+function requireAgentResult(result, what) {
+  if (!result) {
+    throw new Error(what + " agent died without returning a result (likely a usage-limit interruption) — resume the run to retry.");
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // JSON Schemas (plain JS objects). Used to force structured returns from agents
 // so the control flow branches on data, not on free-text the agent could fudge.
 // ---------------------------------------------------------------------------
@@ -182,7 +202,7 @@ const ALWAYS_REVIEWERS = ["adversarial-reviewer", "correctness-reviewer"];
 const OPTIONAL_REVIEWERS = { security: "security-reviewer", performance: "performance-reviewer" };
 
 function selectedReviewers() {
-  const extra = args && Array.isArray(args.reviewers) ? args.reviewers : [];
+  const extra = RUN_ARGS && Array.isArray(RUN_ARGS.reviewers) ? RUN_ARGS.reviewers : [];
   const optional = extra
     .map((r) => OPTIONAL_REVIEWERS[String(r).toLowerCase()])
     .filter(Boolean);
@@ -225,9 +245,26 @@ async function runReviewPanel(runLabel, branch, base, dod) {
     )
   ).filter(Boolean);
 
-  const rejected = results.filter((r) => r.v && r.v.verdict === "reject");
+  // An incomplete panel must never pass: a dead reviewer (null result) is not a
+  // pass-by-absence. Without this, a panel whose reviewers all die (e.g. on a
+  // usage-limit cap) has zero rejections and the feature vacuously "passes"
+  // review that never happened (#76).
+  const expected = selectedReviewers().length;
+  const valid = results.filter((r) => r.v && r.v.verdict);
+  if (valid.length < expected) {
+    return {
+      pass: false,
+      critique:
+        "### review-infrastructure\nOnly " + valid.length + " of " + expected +
+        " reviewers returned a verdict (reviewer agent death, likely a usage-limit interruption). " +
+        "An incomplete panel can never pass; the panel must re-run.",
+      rejectedBy: "incomplete-panel(" + valid.length + "/" + expected + ")",
+    };
+  }
+
+  const rejected = valid.filter((r) => r.v.verdict === "reject");
   if (rejected.length === 0) {
-    const verdictSection = results
+    const verdictSection = valid
       .map((r) => (r.v && r.v.verdictSection) ? r.v.verdictSection : "## Reviewer Verdict\nPASS — " + r.agentType + ".")
       .join("\n\n");
     return { pass: true, verdictSection: verdictSection };
@@ -384,10 +421,10 @@ async function escalate(stage, attempts, context) {
 
 // Gate A inputs (master-design-doc.md §4). These come from the main loop that
 // dispatched this workflow; the workflow does not re-authorize.
-const featureDescription = args.featureDescription || args.feature || args.issue;
-const devBranch = args.devBranch || args.branch;
-const issueRef = args.issue || args.issueRef; // durable escalation target (§4)
-const preApprovedPlan = args.plan || args.preApprovedPlan || null;
+const featureDescription = RUN_ARGS.featureDescription || RUN_ARGS.feature || RUN_ARGS.issue;
+const devBranch = RUN_ARGS.devBranch || RUN_ARGS.branch;
+const issueRef = RUN_ARGS.issue || RUN_ARGS.issueRef; // durable escalation target (§4)
+const preApprovedPlan = RUN_ARGS.plan || RUN_ARGS.preApprovedPlan || null;
 
 if (!featureDescription) {
   throw new Error(
@@ -468,6 +505,7 @@ let implementResult = await agent(
 );
 
 // The branch the implementer actually created is the real one from here on.
+requireAgentResult(implementResult, "IMPLEMENT");
 ctx.branch = implementResult.branch;
 log("Implementation branch: " + ctx.branch + ". Entering the validate/review loop (cap K=" + K + ").");
 
@@ -502,12 +540,14 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
     }
   );
 
-  if (!dod.gatesPass || !dod.smokeAllPass) {
+  if (!dod || !dod.gatesPass || !dod.smokeAllPass) {
     ctx.failureContext =
       "Validation/DoD failed on attempt " +
       attempt +
       ". " +
-      (dod.failureContext || "Gates or smoke cases did not pass.");
+      (dod
+        ? (dod.failureContext || "Gates or smoke cases did not pass.")
+        : "VALIDATE agent died without returning a DoD result (likely a usage-limit interruption); re-run required.");
     log("Validation failed on attempt " + attempt + ". " + ctx.failureContext);
 
     if (attempt === K) {
@@ -530,6 +570,7 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
         isolation: "worktree",
       }
     );
+    requireAgentResult(implementResult, "IMPLEMENT");
     ctx.branch = implementResult.branch;
     continue; // counter-controlled: the for-condition decides if we loop
   }
@@ -565,6 +606,7 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
         isolation: "worktree",
       }
     );
+    requireAgentResult(implementResult, "IMPLEMENT");
     ctx.branch = implementResult.branch;
     continue; // counter-controlled
   }
@@ -588,7 +630,7 @@ if (!reviewed || !dodReport) {
 // PHASE 4 — SHIP. Push the non-main branch and open the dev->main PR.
 // ---------------------------------------------------------------------------
 phase("Ship");
-const ship = await agent(
+const ship = requireAgentResult(await agent(
   "AUTONOMOUS single-feature run, SHIP phase (master-design-doc.md §5, D2). " +
     "Push the NON-MAIN branch '" +
     ctx.branch +
@@ -607,7 +649,7 @@ const ship = await agent(
     phase: "Ship",
     schema: SHIP_SCHEMA,
   }
-);
+), "SHIP");
 ctx.prUrl = ship.prUrl;
 log("Branch pushed and PR opened: " + ctx.prUrl);
 
@@ -641,6 +683,8 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
         ctx.branch +
         "') via the GitHub MCP server. " +
         "Return status 'green' if all required checks passed, 'red' if a required check failed, 'pending' if still running. " +
+        "If the PR reports no checks at all (the repository has no CI configured), that counts as 'green' — " +
+        "do not wait for checks that will never start. " +
         "On 'red', include the failing job names and a short excerpt of the failure logs.",
       {
         label: "poll-ci",
