@@ -21,6 +21,9 @@ README.md                          This file.
 INSTALL.md                         Runbook: how to deploy claude-home/ into ~/.claude.
 claude-home/                       GLOBAL deliverable — drops into ~/.claude (local, all repos).
 claude-repo/                       PER-REPO deliverable — commit into a repo (cloud-capable).
+tests/                             Node test suite (no deps): `node --test` from the repo root.
+                                   Pins the workflow scripts' args-boundary contract
+                                   and that claude-home/ and claude-repo/ copies match.
 docs/                              DOCUMENTATION about the deliverable:
   master-design-doc.md                    Master process doc — the four-mechanism model,
                                      branch tiers, the two human gates. Start here.
