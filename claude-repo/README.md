@@ -14,7 +14,8 @@ cloud (or want self-contained, shareable governance for) and commit it.
 claude-repo/
   CLAUDE.md                 -> <repo>/CLAUDE.md   (the constitution; carries the principles)
   .claude/
-    settings.json           permissions (deny main/force; allow tier pushes) + SessionStart hook
+    settings.json           permissions (deny main/force + env/credential reads; allow tier pushes)
+                             + sandbox .env.example carve-out + SessionStart/PreToolUse hooks
     agents/                 review panel: adversarial + correctness (always), security + performance (opt-in)
     workflows/              single-feature-run.js, federated-run.js
     rules/                  path-scoped: code-style, adr-format
@@ -43,7 +44,10 @@ Then set GitHub server-side branch protection on `main` where your plan allows i
 **Works in cloud (all committed):**
 - `CLAUDE.md` — the constitution (essential: the global one does not travel).
 - `.claude/settings.json` — **the permissions deny-list still enforces against
-  Claude in cloud** (blocks `git push origin main`, force pushes, `reset --hard`).
+  Claude in cloud** (blocks `git push origin main`, force pushes, `reset --hard`,
+  and — see `docs/references/secret-protection.md` — reading env files and
+  credential directories, at the `Read` tool, sandbox filesystem, and
+  Bash-command-text layers).
 - `.claude/agents/`, `.claude/workflows/`, `.claude/rules/`, `.claude/reference/`.
 - `.claude/hooks/session-start.sh` — SessionStart hooks run in cloud.
 

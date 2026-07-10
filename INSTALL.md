@@ -16,7 +16,7 @@ were executed in throwaway repos under macOS `/bin/bash` 3.2 — 19/19 cases pas
 ```
 claude-home/
   CLAUDE.md                      # constitution: your existing CLAUDE.md + the principle-lines + the load index  (OVERWRITES ~/.claude/CLAUDE.md)
-  settings.json                  # your existing settings + branch-tier permissions  (OVERWRITES ~/.claude/settings.json)
+  settings.json                  # your existing settings + branch-tier permissions + secret-protection lockout  (OVERWRITES ~/.claude/settings.json)
   rules/                         # PATH-SCOPED rules (auto-load only on matching files)
     code-style.md                #   + paths: source globs
     adr-format.md                #   + paths: docs/adr/**
@@ -74,7 +74,11 @@ noise or would clobber live state:
    diff ~/.claude/CLAUDE.md     claude-home/CLAUDE.md
    diff ~/.claude/settings.json claude-home/settings.json
    ```
-   `settings.json` keeps every existing key and only ADDS a `permissions` block.
+   `settings.json` keeps every existing key. On top of the branch-tier
+   `permissions` block it also adds the secret-protection layer: env/credential
+   `Read` deny rules, a `sandbox` filesystem carve-out for `.env.example`, and a
+   `PreToolUse` hook that blocks Bash commands referencing env files by name —
+   see `docs/references/secret-protection.md`.
    `CLAUDE.md` keeps your existing text and adds the constitution principle-lines,
    the rule-load index, and the branch-tier section.
 

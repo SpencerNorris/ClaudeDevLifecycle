@@ -30,7 +30,8 @@ docs/                              DOCUMENTATION about the deliverable:
   diagrams/branch-tier-autonomy.md   Mermaid source of truth for diagrams D1–D4.
   specs/                             Design specs — intent, pre-build: what & why.
   adr/                               Architecture decision records.
-  references/                        Durable as-built how-to (e.g. local-CI parity).
+  references/                        Durable as-built how-to (e.g. local-CI parity,
+                                     secret & credential protection).
 ```
 
 ### Inside `claude-home/` (the deliverable)
@@ -99,3 +100,5 @@ Specs are the blueprint; references are the manual.
 - Understand the design → `docs/master-design-doc.md`, then `docs/specs/`.
 - See the diagrams → `docs/diagrams/branch-tier-autonomy.md`.
 - Install globally → `INSTALL.md`; into a single repo → the **Installing** section above (or `claude-repo/README.md`).
+- Understand the secret/credential lockout (env files, credential dirs, the
+  `.env.example` carve-out) → `docs/references/secret-protection.md`.
