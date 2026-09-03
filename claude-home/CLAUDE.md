@@ -77,15 +77,12 @@ GitHub issue) and **Gate B** (merge the `dev→main` PR). Enforcement is mechani
 and **opt-in per repo** — activate it by ANY of: a `.claude/branch-tier` file at
 the repo root, `CLAUDE_BRANCH_TIER=1`, or `git config claude.branchTier true`.
 
-- **Hooks** (`~/.claude/git-hooks/`, enabled by `core.hooksPath`): block
-  *Claude-initiated* direct commits/pushes to `main`/`master` and forbidden tracker
-  filenames. A human in their own terminal (Gate B) is unaffected.
+- **Hooks** (`~/.claude/git-hooks/`, enabled by `core.hooksPath`): block direct
+  commits/pushes to `main`/`master` and block forbidden tracker filenames.
 - **Settings** (`~/.claude/settings.json`): allow tier pushes + `git merge`; deny
   main and force pushes.
-- **Agents — the review panel** (`~/.claude/agents/`): gate each feature after its
-  DoD report, before push/merge. Always: `adversarial-reviewer` (no shims/dishonest
-  DoD) + `correctness-reviewer` (real logic/edge bugs). Opt-in per project (the run's
-  `reviewers` arg): `security-reviewer`, `performance-reviewer`.
+- **Agent** (`~/.claude/agents/adversarial-reviewer.md`): the refute-first skeptic
+  that gates a feature after its DoD report, before push/merge.
 - **Workflows** (`~/.claude/workflows/`): `single-feature-run.js` (D2) and
   `federated-run.js` (D4) run the autonomous cycle with the reviewer gate and
   K-capped retry loops that escalate (never loop forever, never shim).

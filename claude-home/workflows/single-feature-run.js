@@ -89,13 +89,33 @@ const K = 3;
 const NEEDS_HUMAN_LABEL = "needs-human";
 
 // ---------------------------------------------------------------------------
+// Blocker taxonomy (added 2026-09-03). Every structured agent return carries
+// `blocker`. Only "code" (or "none") may re-enter a retry loop; every other
+// value is an EXTERNAL condition no implementer can fix — a dead daemon, a
+// revoked credential, a billing refusal, a usage-limit kill, an ambiguous
+// spec. Those pause the run for a human immediately (pauseForHuman): no root-
+// cause diagnosis, no reimplementation, no spending of the K budget. The
+// control flow branches on this field, never on free-text sniffing.
+// ---------------------------------------------------------------------------
+const BLOCKER_ENUM = ["none", "code", "infra", "credentials", "billing", "usage_limit", "ambiguity"];
+const BLOCKER_PROPS = {
+  blocker: { type: "string", enum: BLOCKER_ENUM },
+  blockerDetail: { type: "string" },
+};
+function isExternalBlocker(b) {
+  return !!b && b !== "none" && b !== "code";
+}
+
+// ---------------------------------------------------------------------------
 // Harness-boundary guards (#76).
 //
 // The Workflow harness can deliver `args` as a JSON STRING rather than a parsed
-// object; field reads off the raw string silently yield undefined and fail the
-// input checks. Normalize once; every reader below uses RUN_ARGS.
+// object, or omit it entirely (undefined/null). Field reads off the raw string
+// silently yield undefined; field reads off undefined throw a bare TypeError
+// instead of the helpful Gate A error. Normalize once to an OBJECT; every
+// reader below uses RUN_ARGS and missing inputs fail the input checks.
 // ---------------------------------------------------------------------------
-const RUN_ARGS = typeof args === "string" ? JSON.parse(args) : args;
+const RUN_ARGS = (typeof args === "string" ? JSON.parse(args) : args) || {};
 
 // agent() returns null when a subagent dies on a terminal error (e.g. a
 // usage-limit interruption). Dereferencing a null structured result crashes the
@@ -150,7 +170,7 @@ const VERDICT_SCHEMA = {
 const DOD_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["gatesPass", "report", "tests", "smokeAllPass"],
+  required: ["gatesPass", "report", "tests", "smokeAllPass", "blocker"],
   properties: {
     // True only when unit+integration+regression+lint+type all pass AND the
     // smoke test (happy + named edges + failure modes) all pass.
@@ -173,6 +193,7 @@ const DOD_SCHEMA = {
     // The full DoD-report markdown (Changes / Tests / Smoke transcript / Docs /
     // Follow-ups) per reference/definition-of-done.md.
     report: { type: "string" },
+    ...BLOCKER_PROPS,
   },
 };
 
@@ -181,12 +202,13 @@ const DOD_SCHEMA = {
 const IMPLEMENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["branch", "summary"],
+  required: ["branch", "summary", "blocker"],
   properties: {
     branch: { type: "string", minLength: 1 },
     summary: { type: "string", minLength: 1 },
     // Files touched, so the reviewer/validator can scope the diff.
     filesTouched: { type: "array", items: { type: "string" } },
+    ...BLOCKER_PROPS,
   },
 };
 
@@ -202,7 +224,15 @@ const ALWAYS_REVIEWERS = ["adversarial-reviewer", "correctness-reviewer"];
 const OPTIONAL_REVIEWERS = { security: "security-reviewer", performance: "performance-reviewer" };
 
 function selectedReviewers() {
-  const extra = RUN_ARGS && Array.isArray(RUN_ARGS.reviewers) ? RUN_ARGS.reviewers : [];
+  // Accept both array form (["performance"]) and string form ("+performance",
+  // "security,performance") — a malformed value must never silently shrink
+  // the panel (it did once: Stage 2's +performance string parsed to []).
+  const raw = RUN_ARGS.reviewers;
+  const extra = Array.isArray(raw)
+    ? raw
+    : typeof raw === "string"
+      ? raw.split(/[+,\s]+/).filter(Boolean)
+      : [];
   const optional = extra
     .map((r) => OPTIONAL_REVIEWERS[String(r).toLowerCase()])
     .filter(Boolean);
@@ -239,7 +269,7 @@ async function runReviewPanel(runLabel, branch, base, dod) {
             " Return verdict 'pass' only if you found no blocking finding; otherwise 'reject' with specific " +
             "findings (each naming the triggering case/path and the required fix). On pass, return a short " +
             "`verdictSection` (markdown)." + evidence,
-          { label: agentType, phase: "Review", agentType: agentType, schema: VERDICT_SCHEMA }
+          { label: agentType, phase: "Review", agentType: agentType, model: "opus", schema: VERDICT_SCHEMA }
         ).then((v) => ({ agentType: agentType, v: v }))
       )
     )
@@ -254,6 +284,7 @@ async function runReviewPanel(runLabel, branch, base, dod) {
   if (valid.length < expected) {
     return {
       pass: false,
+      incomplete: true,
       critique:
         "### review-infrastructure\nOnly " + valid.length + " of " + expected +
         " reviewers returned a verdict (reviewer agent death, likely a usage-limit interruption). " +
@@ -284,10 +315,11 @@ async function runReviewPanel(runLabel, branch, base, dod) {
 const SHIP_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["prUrl", "pushed"],
+  required: ["pushed", "blocker"],
   properties: {
-    prUrl: { type: "string", minLength: 1 },
+    prUrl: { type: "string" },
     pushed: { type: "boolean" },
+    ...BLOCKER_PROPS,
   },
 };
 
@@ -295,12 +327,13 @@ const SHIP_SCHEMA = {
 const CI_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["status"],
+  required: ["status", "blocker"],
   properties: {
     // "green" = all checks passed; "red" = a check failed; "pending" = still running.
     status: { type: "string", enum: ["green", "red", "pending"] },
     failingJobs: { type: "array", items: { type: "string" } },
     logsExcerpt: { type: "string" },
+    ...BLOCKER_PROPS,
   },
 };
 
@@ -371,6 +404,7 @@ async function escalate(stage, attempts, context) {
     {
       label: "root-cause-diagnosis",
       phase: stage,
+      model: "opus",
       effort: "high",
     }
   );
@@ -403,6 +437,7 @@ async function escalate(stage, attempts, context) {
     {
       label: "escalate-to-issue",
       phase: stage,
+      model: "sonnet",
     }
   );
 
@@ -415,6 +450,40 @@ async function escalate(stage, attempts, context) {
   throw new EscalationStop(stage, attempts, diagnosis);
 }
 
+/**
+ * pauseForHuman — the cheap terminal for EXTERNAL blockers (added 2026-09-03).
+ *
+ * A dead daemon, a revoked credential, a billing refusal, a usage-limit kill or
+ * an unresolvable ambiguity is not a code defect: no implementer can fix it and
+ * a root-cause diagnosis adds nothing. Post a short comment + the needs-human
+ * label and stop at once, leaving branch/PR in place so the run resumes
+ * (resumeFromRunId + a fresh resumeNonce) once the human has fixed it.
+ * ALWAYS throws, like escalate().
+ */
+async function pauseForHuman(stage, blocker, context) {
+  log(
+    "PAUSED FOR HUMAN at stage '" + stage + "': blocker=" + blocker + " — " +
+      context.failureContext + " (no retries, no diagnosis)."
+  );
+  await agent(
+    "Post a SHORT comment to the feature issue via the GitHub MCP server and add the '" +
+      NEEDS_HUMAN_LABEL +
+      "' label. Do NOT push, merge, or modify code.\n\nIssue: " +
+      context.issue +
+      "\nBranch: " +
+      context.branch +
+      "\nPR: " +
+      (context.prUrl || "not opened") +
+      "\n\nThe comment MUST contain, as labeled sections: " +
+      "'Autonomous run paused — " + blocker + " blocker, not a code failure'; " +
+      "'Stage: " + stage + "'; 'Blocker detail' (the text below, verbatim); and " +
+      "'Next step: fix the condition, then resume the run (resumeFromRunId with a fresh resumeNonce) — no re-authorization needed.'\n\nBlocker detail:\n" +
+      context.failureContext,
+    { label: "pause-for-human", phase: stage, model: "sonnet", effort: "low" }
+  );
+  throw new EscalationStop(stage, 1, "PAUSED (" + blocker + "): " + context.failureContext);
+}
+
 // ===========================================================================
 // MAIN FLOW
 // ===========================================================================
@@ -425,6 +494,14 @@ const featureDescription = RUN_ARGS.featureDescription || RUN_ARGS.feature || RU
 const devBranch = RUN_ARGS.devBranch || RUN_ARGS.branch;
 const issueRef = RUN_ARGS.issue || RUN_ARGS.issueRef; // durable escalation target (§4)
 const preApprovedPlan = RUN_ARGS.plan || RUN_ARGS.preApprovedPlan || null;
+
+// Resume support (added 2026-09-03): the harness caches a completed agent()
+// result by (prompt, opts), so a resumed run would replay a failed validate
+// verdict verbatim unless the prompt changes. The nonce is folded into the
+// Validate prompt. `existingBranch` tells the implementer to continue a branch a
+// previous (interrupted) attempt already created instead of starting fresh.
+const resumeNonce = RUN_ARGS.resumeNonce ? String(RUN_ARGS.resumeNonce) : "";
+const existingBranch = RUN_ARGS.existingBranch ? String(RUN_ARGS.existingBranch) : "";
 
 if (!featureDescription) {
   throw new Error(
@@ -491,6 +568,11 @@ let implementResult = await agent(
     "Then do TDD: write a FAILING test that pins the desired behavior, implement until it is green, then refactor. " +
     "Fix in-scope bugs in this change (no-shed); file only genuinely orthogonal bugs as cross-linked GH issues.\n\n" +
     planClause +
+    (existingBranch
+      ? "A branch for this feature ALREADY EXISTS: '" + existingBranch + "'. Check it out in your worktree and CONTINUE from its tip — never create a fresh branch, never redo work already committed there.\n"
+      : "") +
+    "COMMIT DISCIPLINE (reference/workflow-autonomy.md): commit after every green test cycle; never leave more than one task's work uncommitted — if you are interrupted, committed work is the only work that survives.\n" +
+    "BLOCKERS: if you hit an external condition you cannot fix — a missing/invalid credential, a dead daemon or service, a billing refusal, or an issue/spec too ambiguous to derive acceptance criteria from — STOP and return blocker='credentials'|'infra'|'billing'|'ambiguity' with blockerDetail; otherwise return blocker='none'.\n" +
     "\nFeature: " +
     featureDescription +
     "\nLinked issue: " +
@@ -499,6 +581,7 @@ let implementResult = await agent(
   {
     label: "implement-tdd",
     phase: "Implement",
+    model: "sonnet",
     schema: IMPLEMENT_SCHEMA,
     isolation: "worktree",
   }
@@ -507,6 +590,10 @@ let implementResult = await agent(
 // The branch the implementer actually created is the real one from here on.
 requireAgentResult(implementResult, "IMPLEMENT");
 ctx.branch = implementResult.branch;
+if (isExternalBlocker(implementResult.blocker)) {
+  ctx.failureContext = implementResult.blockerDetail || ("blocker=" + implementResult.blocker);
+  await pauseForHuman("Implement", implementResult.blocker, ctx);
+}
 log("Implementation branch: " + ctx.branch + ". Entering the validate/review loop (cap K=" + K + ").");
 
 let dodReport = null; // the passing DoD report (with verdict appended) for the PR
@@ -520,34 +607,37 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
   // ---- PHASE 2: VALIDATE + DoD report -----------------------------------
   phase("Validate");
   const dod = await agent(
-    "AUTONOMOUS single-feature run, VALIDATE phase (master-design-doc.md §5, D2; reference/definition-of-done.md).\n" +
-      "On branch '" +
-      ctx.branch +
-      "', run the full validation: unit + integration + regression + lint + type-check. " +
-      "THEN smoke-test against the running system: the happy path, EVERY named edge case in the feature/issue/spec " +
-      "(or, if none are stated, derive them explicitly and list them), and the most plausible failure modes for the surface touched. " +
+    "AUTONOMOUS single-feature run, VALIDATE phase — attempt " + attempt + " of " + K +
+      (resumeNonce ? ", resume " + resumeNonce : "") +
+      " (master-design-doc.md §5, D2; reference/definition-of-done.md).\n" +
+      "STEP 0 — PREFLIGHT, before running a single test. List every external resource the issue's acceptance criteria depend on and verify each with the cheapest possible check: an LLM key via ONE minimal call through the app's configured provider; the Docker daemon (`docker info` answers within 15 s) and the target services' health endpoints; at least 10 GB free on the volume holding Docker's data; GitHub reachability if the smoke needs it. If any check fails, STOP: return gatesPass=false, smokeAllPass=false, blocker = the matching kind ('infra' | 'credentials' | 'billing' | 'usage_limit') and blockerDetail = the exact error text. Never retry a preflight, never attempt host recovery, never enter or read credentials.\n" +
+      "STEP 1 — GATES on branch '" + ctx.branch + "': unit + integration + regression + lint + type-check.\n" +
+      "STEP 2 — SMOKE against the running system: the happy path, EVERY named edge case in the feature/issue/spec (or, if none are stated, derive them explicitly and list them), and the most plausible failure modes for the surface touched. If the stack is in the dev shape (bind-mounted source), do NOT rebuild images for code changes — rebuild only when dependencies, a Dockerfile, or the nginx template changed.\n" +
+      "Set blocker='code' when a gate or smoke case fails because of the change; 'ambiguity' when the issue/spec is contradictory or under-specified and acceptance criteria cannot be derived; a preflight kind when an external resource failed mid-smoke; 'none' when everything passed.\n" +
       "Produce a DoD report with the exact structure from reference/definition-of-done.md " +
       "(## Changes / ## Tests / ## Smoke test transcript / ## Docs updated / ## Follow-ups), including the real transcript. " +
       "Be honest: gatesPass is true ONLY if every test gate AND every smoke case actually passed.\n\n" +
-      "Feature: " +
-      featureDescription +
-      "\nLinked issue: " +
-      issueRef,
+      "Feature: " + featureDescription + "\nLinked issue: " + issueRef,
     {
       label: "validate-and-dod",
       phase: "Validate",
+      model: "sonnet",
       schema: DOD_SCHEMA,
     }
   );
 
-  if (!dod || !dod.gatesPass || !dod.smokeAllPass) {
+  if (!dod) {
+    ctx.failureContext = "VALIDATE agent died without returning a DoD result (usage-limit or harness interruption).";
+    await pauseForHuman("Validate", "usage_limit", ctx);
+  }
+  if (isExternalBlocker(dod.blocker)) {
+    ctx.failureContext = dod.blockerDetail || dod.failureContext || ("blocker=" + dod.blocker);
+    await pauseForHuman("Validate", dod.blocker, ctx);
+  }
+  if (!dod.gatesPass || !dod.smokeAllPass) {
+    // A genuine code failure — the ONLY kind that may spend the K budget.
     ctx.failureContext =
-      "Validation/DoD failed on attempt " +
-      attempt +
-      ". " +
-      (dod
-        ? (dod.failureContext || "Gates or smoke cases did not pass.")
-        : "VALIDATE agent died without returning a DoD result (likely a usage-limit interruption); re-run required.");
+      "Validation/DoD failed on attempt " + attempt + ". " + (dod.failureContext || "Gates or smoke cases did not pass.");
     log("Validation failed on attempt " + attempt + ". " + ctx.failureContext);
 
     if (attempt === K) {
@@ -559,6 +649,8 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
     implementResult = await agent(
       "AUTONOMOUS run, back to IMPLEMENT after a VALIDATE failure (master-design-doc.md §5). " +
         "Fix the root cause — do NOT weaken tests, skip cases, or shim. Keep TDD discipline.\n\n" +
+        "COMMIT DISCIPLINE (reference/workflow-autonomy.md): commit after every green test cycle; never leave more than one task's work uncommitted — if you are interrupted, committed work is the only work that survives.\n" +
+        "BLOCKERS: if you hit an external condition you cannot fix — a missing/invalid credential, a dead daemon or service, a billing refusal, or an issue/spec too ambiguous to derive acceptance criteria from — STOP and return blocker='credentials'|'infra'|'billing'|'ambiguity' with blockerDetail; otherwise return blocker='none'.\n\n" +
         "Branch: " +
         ctx.branch +
         "\nWhat failed:\n" +
@@ -566,12 +658,17 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
       {
         label: "reimplement-after-validate",
         phase: "Implement",
+        model: "sonnet",
         schema: IMPLEMENT_SCHEMA,
         isolation: "worktree",
       }
     );
     requireAgentResult(implementResult, "IMPLEMENT");
     ctx.branch = implementResult.branch;
+    if (isExternalBlocker(implementResult.blocker)) {
+      ctx.failureContext = implementResult.blockerDetail || ("blocker=" + implementResult.blocker);
+      await pauseForHuman("Implement", implementResult.blocker, ctx);
+    }
     continue; // counter-controlled: the for-condition decides if we loop
   }
 
@@ -580,6 +677,12 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
   // ---- PHASE 3: REVIEW PANEL (adversarial + correctness always; security/perf opt-in) ----
   phase("Review");
   const review = await runReviewPanel("AUTONOMOUS single-feature run,", ctx.branch, devBranch, dod);
+
+  if (review.incomplete) {
+    // Dead reviewers (usage-limit) are not a rejection: never hand this to an implementer.
+    ctx.failureContext = review.critique;
+    await pauseForHuman("Review", "usage_limit", ctx);
+  }
 
   if (!review.pass) {
     // Reject is transient — the aggregated panel critique IS the retry context (spec §5).
@@ -595,6 +698,8 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
     implementResult = await agent(
       "AUTONOMOUS run, back to IMPLEMENT after a REVIEW reject (master-design-doc.md §8). " +
         "Address EVERY blocking finding by fixing the ROOT CAUSE. Do NOT weaken tests or shim to satisfy a reviewer.\n\n" +
+        "COMMIT DISCIPLINE (reference/workflow-autonomy.md): commit after every green test cycle; never leave more than one task's work uncommitted — if you are interrupted, committed work is the only work that survives.\n" +
+        "BLOCKERS: if you hit an external condition you cannot fix — a missing/invalid credential, a dead daemon or service, a billing refusal, or an issue/spec too ambiguous to derive acceptance criteria from — STOP and return blocker='credentials'|'infra'|'billing'|'ambiguity' with blockerDetail; otherwise return blocker='none'.\n\n" +
         "Branch: " +
         ctx.branch +
         "\nReviewer critique:\n" +
@@ -602,12 +707,17 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
       {
         label: "reimplement-after-review",
         phase: "Implement",
+        model: "sonnet",
         schema: IMPLEMENT_SCHEMA,
         isolation: "worktree",
       }
     );
     requireAgentResult(implementResult, "IMPLEMENT");
     ctx.branch = implementResult.branch;
+    if (isExternalBlocker(implementResult.blocker)) {
+      ctx.failureContext = implementResult.blockerDetail || ("blocker=" + implementResult.blocker);
+      await pauseForHuman("Implement", implementResult.blocker, ctx);
+    }
     continue; // counter-controlled
   }
 
@@ -642,16 +752,33 @@ const ship = requireAgentResult(await agent(
     "' via the GitHub MCP server, linking issue " +
     issueRef +
     ". Use the DoD report (with the appended reviewer verdict) below as the PR body. " +
-    "Return the PR URL.\n\nDoD report (PR body):\n" +
+    "Return the PR URL. If the push or PR creation fails for an EXTERNAL reason (auth, network, GitHub billing/permissions), return pushed=false with blocker='credentials'|'infra'|'billing' and blockerDetail; otherwise blocker='none'.\n\nDoD report (PR body):\n" +
     dodReport,
   {
     label: "push-and-open-pr",
     phase: "Ship",
+    model: "sonnet",
     schema: SHIP_SCHEMA,
   }
 ), "SHIP");
 ctx.prUrl = ship.prUrl;
+if (isExternalBlocker(ship.blocker) || !ship.pushed || !ship.prUrl) {
+  ctx.failureContext =
+    ship.blockerDetail ||
+    (!ship.pushed ? "push did not complete" : "PR was not opened (no URL returned)");
+  await pauseForHuman("Ship", isExternalBlocker(ship.blocker) ? ship.blocker : "infra", ctx);
+}
 log("Branch pushed and PR opened: " + ctx.prUrl);
+
+// Cleanup (added 2026-09-03): the implementer's worktree has served its purpose
+// once the branch is pushed. Leaving it locks the branch against checkout
+// elsewhere and litters .claude/worktrees (28 accumulated once). Best-effort;
+// the branch itself is never deleted here.
+await agent(
+  "Remove any git worktree whose checked-out branch is '" + ctx.branch +
+    "' (`git worktree list`, then `git worktree remove --force <path>`, then `git worktree prune`). Do NOT delete the branch. If removal is refused, say why and stop — do not escalate.",
+  { label: "cleanup-worktree", phase: "Ship", model: "sonnet", effort: "low" }
+);
 
 // ---------------------------------------------------------------------------
 // PHASE 5 — CI. Poll GitHub Actions; on red, fix + re-push, capped at K.
@@ -685,18 +812,34 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
         "Return status 'green' if all required checks passed, 'red' if a required check failed, 'pending' if still running. " +
         "If the PR reports no checks at all (the repository has no CI configured), that counts as 'green' — " +
         "do not wait for checks that will never start. " +
-        "On 'red', include the failing job names and a short excerpt of the failure logs.",
+        "On 'red', include the failing job names and a short excerpt of the failure logs. " +
+        "If a job failed before any step ran with an annotation about account payments, billing, or a spending limit (check `gh api repos/{owner}/{repo}/check-runs/{id}/annotations`), return status 'red', blocker 'billing', logsExcerpt = that annotation verbatim. Otherwise blocker 'none' for green/pending and 'code' for a red caused by the change.",
       {
         label: "poll-ci",
         phase: "CI",
+        model: "sonnet",
         schema: CI_SCHEMA,
       }
     );
+    if (!ci) {
+      // The poll agent died (usage-limit / harness). Leave the loop; the
+      // null check below pauses for a human instead of dereferencing null.
+      break;
+    }
     if (ci.status === "green" || ci.status === "red") {
       terminal = true;
     } else {
       log("CI still pending (poll " + poll + "/" + pollBudget + ").");
     }
+  }
+
+  if (!ci) {
+    ctx.failureContext = "CI poll agent died without returning a status (usage-limit or harness interruption).";
+    await pauseForHuman("CI", "usage_limit", ctx);
+  }
+  if (isExternalBlocker(ci.blocker)) {
+    ctx.failureContext = ci.blockerDetail || ci.logsExcerpt || ("blocker=" + ci.blocker);
+    await pauseForHuman("CI", ci.blocker, ctx);
   }
 
   if (!ci || !terminal) {
@@ -738,6 +881,7 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
     {
       label: "fix-ci-and-repush",
       phase: "CI",
+      model: "sonnet",
       isolation: "worktree",
     }
   );
