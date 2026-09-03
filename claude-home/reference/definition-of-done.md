@@ -108,6 +108,38 @@ This is **not** "done." It is a clear handoff to a verifier who has
 access to the required environment. The user must explicitly accept
 this handoff for the work to be considered complete.
 
+## Blockers are not failures
+
+A validation that cannot run is not a validation that failed. Every structured
+result an autonomous run produces carries a `blocker`:
+
+| blocker | Meaning | What the run does |
+|---|---|---|
+| `none` | everything passed | proceed |
+| `code` | a gate or smoke case fails because of the change | the only kind that spends the K=3 retry budget |
+| `infra` | daemon down, disk full, service unreachable | pause for a human at once |
+| `credentials` | a stored key is missing, invalid or expired | pause |
+| `billing` | CI/provider refused for account reasons | pause |
+| `usage_limit` | an agent was killed by the account cap | pause; resume later |
+| `ambiguity` | the issue/spec cannot yield acceptance criteria | pause; a human clarifies |
+
+"Pause" means one short comment on the issue plus the `needs-human` label —
+no root-cause diagnosis, no reimplementation, no retries. The run resumes
+(`resumeFromRunId` with a fresh `resumeNonce`) once the condition is fixed.
+
+**Preflight comes first.** Before a single test runs, verify every external
+resource the acceptance criteria depend on with the cheapest possible check:
+an LLM key via one minimal call through the app's configured provider, the
+Docker daemon and target services' health, disk headroom, GitHub reachability
+when the smoke needs it. A failed preflight returns the matching blocker
+immediately. Running 3,800 unit tests and then discovering the key is dead is
+the failure mode this rule exists to prevent.
+
+**Rebuild only when it matters.** In a dev-shaped stack (bind-mounted source
+with hot reload) code changes are live in seconds; rebuild images only when
+dependencies, a Dockerfile, or a proxy template change. Needless full rebuilds
+are how a host disk got filled and a Docker VM corrupted.
+
 ## Report structure
 
 Every "done" report follows this structure:
