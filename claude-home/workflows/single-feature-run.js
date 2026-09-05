@@ -598,11 +598,27 @@ log("Implementation branch: " + ctx.branch + ". Entering the validate/review loo
 
 let dodReport = null; // the passing DoD report (with verdict appended) for the PR
 
-// Counter-controlled outer loop. `attempt` increments on EVERY pass; the loop is
-// structurally bounded by K. There is no agent-controlled `continue`.
+// Counter-controlled outer loop. The loop is structurally bounded by 2K passes
+// and by the two INDEPENDENT budgets below. There is no agent-controlled
+// `continue`.
+//
+// Two budgets, not one (changed 2026-09-05). Validate failures and reviewer
+// rejects are different loops per the contract in the file header ("Reject ->
+// hand the critique back ... and retry (capped at K)"). Sharing one counter
+// meant a feature that spent K-1 attempts getting Validate green met a review
+// panel whose first reject was unappealable by construction — exactly what
+// happened on GH #299: three "attempts" on the escalation, review ran once,
+// its finding was never worked. Each loop now has its own K; the pass number
+// is reported alongside so the escalation text is honest.
 let reviewed = false;
-for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
-  log("Validate/review attempt " + attempt + " of " + K + ".");
+let validateFailures = 0;
+let reviewRejects = 0;
+for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
+  log(
+    "Validate/review pass " + pass + " (validate failures " + validateFailures + "/" + K +
+      ", review rejects " + reviewRejects + "/" + K + ")."
+  );
+  const attempt = pass; // kept for the Validate prompt's cache-busting "attempt N"
 
   // ---- PHASE 2: VALIDATE + DoD report -----------------------------------
   phase("Validate");
@@ -635,14 +651,16 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
     await pauseForHuman("Validate", dod.blocker, ctx);
   }
   if (!dod.gatesPass || !dod.smokeAllPass) {
-    // A genuine code failure — the ONLY kind that may spend the K budget.
+    // A genuine code failure — the ONLY kind that may spend the Validate budget.
+    validateFailures++;
     ctx.failureContext =
-      "Validation/DoD failed on attempt " + attempt + ". " + (dod.failureContext || "Gates or smoke cases did not pass.");
-    log("Validation failed on attempt " + attempt + ". " + ctx.failureContext);
+      "Validation/DoD failed (validate failure " + validateFailures + " of " + K + ", pass " + pass + "). " +
+      (dod.failureContext || "Gates or smoke cases did not pass.");
+    log("Validation failed (" + validateFailures + "/" + K + "). " + ctx.failureContext);
 
-    if (attempt === K) {
-      // Cap reached on a validation failure — escalate, never loop again.
-      await escalate("Validate", attempt, ctx);
+    if (validateFailures === K) {
+      // Validate budget exhausted — escalate, never loop again.
+      await escalate("Validate", validateFailures, ctx);
     }
 
     // Hand the failure back to the implementer and spend the next attempt.
@@ -686,13 +704,15 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
 
   if (!review.pass) {
     // Reject is transient — the aggregated panel critique IS the retry context (spec §5).
+    reviewRejects++;
     ctx.failureContext =
-      "Review panel rejected on attempt " + attempt + " (by: " + review.rejectedBy + "):\n" + review.critique;
-    log("Review REJECTED on attempt " + attempt + " by " + review.rejectedBy + ". Handing the critique back to implementation.");
+      "Review panel rejected (review reject " + reviewRejects + " of " + K + ", pass " + pass +
+      "; by: " + review.rejectedBy + "):\n" + review.critique;
+    log("Review REJECTED (" + reviewRejects + "/" + K + ") by " + review.rejectedBy + ". Handing the critique back to implementation.");
 
-    if (attempt === K) {
-      // Cap reached on a reviewer reject — escalate, never loop again, never shim.
-      await escalate("Review", attempt, ctx);
+    if (reviewRejects === K) {
+      // Review budget exhausted — escalate, never loop again, never shim.
+      await escalate("Review", reviewRejects, ctx);
     }
 
     implementResult = await agent(
@@ -725,7 +745,7 @@ for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
   // report so they travel with the PR to Gate B (spec §5, verdict persistence).
   dodReport = dod.report + "\n\n" + review.verdictSection;
   reviewed = true;
-  log("Review panel PASSED on attempt " + attempt + ". Verdicts appended to the DoD report.");
+  log("Review panel PASSED on pass " + pass + ". Verdicts appended to the DoD report.");
 }
 
 // If the loop exited without a review pass and without escalating, that is a bug

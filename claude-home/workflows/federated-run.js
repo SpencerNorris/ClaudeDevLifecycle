@@ -499,7 +499,13 @@ async function processFeature(feature, devBranch) {
   let reviewed = false;
   let dodReport = null;
 
-  for (let attempt = 1; attempt <= K && !reviewed; attempt++) {
+  // Two INDEPENDENT budgets (changed 2026-09-05, mirrors single-feature-run.js):
+  // validate failures and reviewer rejects each get their own K, so a feature
+  // that spent attempts getting Validate green still gets a full review loop.
+  let validateFailures = 0;
+  let reviewRejects = 0;
+  for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
+    const attempt = pass; // kept for the Validate prompt's cache-busting "attempt N"
     // ---- VALIDATE + DoD report --------------------------------------------
     const dod = await agent(
       "AUTONOMOUS federated run, VALIDATE for feature '" + feature.title + "' — attempt " + attempt + " of " + K +
@@ -526,13 +532,15 @@ async function processFeature(feature, devBranch) {
       return { feature, branch: ctx.branch, escalated: true, reason: ctx.failureContext };
     }
     if (!dod.gatesPass || !dod.smokeAllPass) {
-      // A genuine code failure — the ONLY kind that may spend this feature's K budget.
+      // A genuine code failure — the ONLY kind that may spend this feature's Validate budget.
+      validateFailures++;
       ctx.failureContext =
-        "Validation/DoD failed on attempt " + attempt + ". " + (dod.failureContext || "Gates or smoke cases did not pass.");
-      log(tag + ": validation failed on attempt " + attempt + ".");
+        "Validation/DoD failed (validate failure " + validateFailures + " of " + K + ", pass " + pass + "). " +
+        (dod.failureContext || "Gates or smoke cases did not pass.");
+      log(tag + ": validation failed (" + validateFailures + "/" + K + ").");
 
-      if (attempt === K) {
-        await postEscalation("Fan-out", attempt, ctx, tag);
+      if (validateFailures === K) {
+        await postEscalation("Fan-out", validateFailures, ctx, tag);
         return { feature, branch: ctx.branch, escalated: true, reason: ctx.failureContext };
       }
 
@@ -577,12 +585,14 @@ async function processFeature(feature, devBranch) {
     }
 
     if (!review.pass) {
+      reviewRejects++;
       ctx.failureContext =
-        "Review panel rejected on attempt " + attempt + " (by: " + review.rejectedBy + "):\n" + review.critique;
-      log(tag + ": review REJECTED on attempt " + attempt + " by " + review.rejectedBy + ".");
+        "Review panel rejected (review reject " + reviewRejects + " of " + K + ", pass " + pass +
+        "; by: " + review.rejectedBy + "):\n" + review.critique;
+      log(tag + ": review REJECTED (" + reviewRejects + "/" + K + ") by " + review.rejectedBy + ".");
 
-      if (attempt === K) {
-        await postEscalation("Review", attempt, ctx, tag);
+      if (reviewRejects === K) {
+        await postEscalation("Review", reviewRejects, ctx, tag);
         return { feature, branch: ctx.branch, escalated: true, reason: ctx.failureContext };
       }
 
@@ -612,7 +622,7 @@ async function processFeature(feature, devBranch) {
     // PASS — every dispatched reviewer passed. Persist their verdicts (spec §5).
     dodReport = dod.report + "\n\n" + review.verdictSection;
     reviewed = true;
-    log(tag + ": review panel PASSED on attempt " + attempt + ". Reviewed-green.");
+    log(tag + ": review panel PASSED on pass " + pass + ". Reviewed-green.");
   }
 
   if (!reviewed || !dodReport) {
