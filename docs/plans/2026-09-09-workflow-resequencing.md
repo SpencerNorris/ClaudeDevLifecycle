@@ -168,7 +168,7 @@ export async function runWorkflowRecording(scriptPath, args, scenario) {
       let entry = pick(label);
       const cacheable = !!(entry && entry.cacheable);
       if (cacheable) entry = entry.result;
-      const key = label + " " + prompt;
+      const key = label + "\n" + prompt;
       if (seen.has(key) && !cacheable) throw new Error("cache collision: prompt for " + label + " repeated verbatim — the real harness would replay the first result");
       seen.add(key);
       labels.push(label);
