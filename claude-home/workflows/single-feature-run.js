@@ -197,20 +197,38 @@ const DOD_SCHEMA = {
   },
 };
 
-// The implementer's structured result, so the workflow knows a branch exists and
-// can name the diff handed to the reviewer.
+// The implementer's structured result. `headSha` is the commit the work ends
+// at — the workflow pins every later stage to it (spec D1). `branch` is the
+// name the implementer was told to use; `worktreeBranch` is the branch it
+// actually committed on when the named branch was held by another worktree.
+// `minorsDeferred` is a claim, not a permission: the delta review judges it.
 const IMPLEMENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["branch", "summary", "blocker"],
+  required: ["branch", "headSha", "summary", "blocker"],
   properties: {
     branch: { type: "string", minLength: 1 },
+    headSha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+    worktreeBranch: { type: "string" },
     summary: { type: "string", minLength: 1 },
-    // Files touched, so the reviewer/validator can scope the diff.
     filesTouched: { type: "array", items: { type: "string" } },
+    minorsDeferred: {
+      type: "array",
+      items: {
+        type: "object", additionalProperties: false, required: ["id", "reason"],
+        properties: { id: { type: "string" }, reason: { type: "string" } },
+      },
+    },
     ...BLOCKER_PROPS,
   },
 };
+
+// Shared by every implement prompt (spec D1).
+const HEAD_SHA_CLAUSE =
+  "BRANCH CONTRACT: work on the named branch. If git refuses to check it out because another worktree holds it, " +
+  "commit on your worktree's own branch instead — never fail for this, never create any other branch — and report " +
+  "that branch as `worktreeBranch`. In every case return `headSha` = the full 40-hex commit your work ends at " +
+  "(`git rev-parse HEAD` after your last commit) and `branch` = the name you were given.\n";
 
 // ---------------------------------------------------------------------------
 // REVIEW PANEL. The adversarial + correctness reviewers ALWAYS run; security and
@@ -535,7 +553,19 @@ log(
 // Shared mutable context handed to escalation so its comment is accurate.
 const ctx = {
   issue: issueRef,
-  branch: devBranch,
+  branch: devBranch,        // becomes the feature branch after the first implement result
+  headSha: null,
+  runWorktree: null,        // the run-owned checkout every later stage works in (spec D1)
+  ownedWorktrees: [],       // paths this run created or detached — the only ones cleanup may remove
+  worktreeBranches: [],     // side branches implementers reported
+  minorsDeferred: [],
+  constraints: [],
+  gateSummary: "",
+  failedCases: [],
+  lastSmokeSha: null,
+  prevReviewSha: null,
+  findings: {},             // per reviewer seat: id -> finding, the delta-review ledger (spec D3)
+  reviewVerdictSection: "",
   prUrl: null,
   failureContext: "",
 };
@@ -571,6 +601,7 @@ let implementResult = await agent(
     (existingBranch
       ? "A branch for this feature ALREADY EXISTS: '" + existingBranch + "'. Check it out in your worktree and CONTINUE from its tip — never create a fresh branch, never redo work already committed there.\n"
       : "") +
+    HEAD_SHA_CLAUSE +
     "COMMIT DISCIPLINE (reference/workflow-autonomy.md): commit after every green test cycle; never leave more than one task's work uncommitted — if you are interrupted, committed work is the only work that survives.\n" +
     "BLOCKERS: if you hit an external condition you cannot fix — a missing/invalid credential, a dead daemon or service, a billing refusal, or an issue/spec too ambiguous to derive acceptance criteria from — STOP and return blocker='credentials'|'infra'|'billing'|'ambiguity' with blockerDetail; otherwise return blocker='none'.\n" +
     "\nFeature: " +
@@ -590,6 +621,9 @@ let implementResult = await agent(
 // The branch the implementer actually created is the real one from here on.
 requireAgentResult(implementResult, "IMPLEMENT");
 ctx.branch = implementResult.branch;
+ctx.headSha = implementResult.headSha;
+if (implementResult.worktreeBranch) ctx.worktreeBranches.push(implementResult.worktreeBranch);
+ctx.minorsDeferred = ctx.minorsDeferred.concat(implementResult.minorsDeferred || []);
 if (isExternalBlocker(implementResult.blocker)) {
   ctx.failureContext = implementResult.blockerDetail || ("blocker=" + implementResult.blocker);
   await pauseForHuman("Implement", implementResult.blocker, ctx);
