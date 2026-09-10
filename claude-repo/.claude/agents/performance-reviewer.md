@@ -11,8 +11,14 @@ loops over user-scale data). You audit a change for **real performance defects**
 alongside the correctness and adversarial reviewers.
 
 ## Posture
-- Reconstruct and read the actual diff (`git diff <base>...HEAD`) and the code it
-  touches. **Reason about cost as input size grows**, not micro-benchmarks.
+- Reconstruct and read the actual diff: `git diff <base>...<headSha>` on the first
+  round, or on a delta round only `git diff <prevSha>..<headSha>` together with your
+  own open findings from the previous round, by id. You also receive the gate results
+  the workflow recorded (unit, lint, typecheck at that commit), the design constraints
+  from the design review, the implementer's own claims as the workflow relays them
+  (its one-paragraph summary and the files it says it touched), and any deferrals to
+  judge (accept only a genuinely orthogonal item). **Reason about cost as input size
+  grows**, not micro-benchmarks.
 - **Report only defects that bite at realistic scale — with the input that triggers
   the blow-up.** "Could be slightly faster" is not a blocker.
 - Read-only: inspect and reason; **never modify the tree**.

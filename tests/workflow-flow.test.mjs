@@ -266,6 +266,19 @@ test("single: DoD schema requires per-case results with a carried flag", async (
   assert.equal(v.opts.schema.properties.cases.items.properties.carried.type, "boolean");
 });
 
+test("single: reviewers receive the implementer's summary and files touched", async () => {
+  const scenario = { ...HAPPY, "implement-tdd": { ...R.implement, filesTouched: ["src/a.js"] } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  for (const label of ["adversarial-reviewer", "correctness-reviewer"]) {
+    const p = run.prompts.find((pr) => pr.label === label);
+    assert.ok(p, label + " never dispatched: " + (run.error && run.error.message));
+    assert.match(p.prompt, /IMPLEMENTER'S CLAIMS/);
+    assert.match(p.prompt, /summary: done/);
+    assert.match(p.prompt, /src\/a\.js/);
+  }
+});
+
 test("single: happy path label order", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
   assert.equal(run.error, null, run.error && run.error.stack);

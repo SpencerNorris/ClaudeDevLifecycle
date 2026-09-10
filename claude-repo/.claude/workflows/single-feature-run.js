@@ -739,6 +739,8 @@ async function reimplement(label, why, context, pass) {
       "Branch: " + ctx.branch + " at " + ctx.headSha + "\n" + context,
     { label, phase: "Implement", model: "sonnet", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
   ), "IMPLEMENT");
+  ctx.lastImplementSummary = r.summary || "";
+  ctx.lastFilesTouched = r.filesTouched || [];
   // Record worktreeBranch BEFORE the blocker check: pauseForHuman() cleans up
   // worktrees immediately, and a blocked-but-committed implementer's side
   // branch must be registered first or cleanup never sees it (the
@@ -882,6 +884,8 @@ const ctx = {
   acceptedDeferrals: [],    // deferral claims a review panel accepted ({ id, reason, note })
   constraints: [],
   gateSummary: "",
+  lastImplementSummary: "", // the implementer's own claim, relayed verbatim to every reviewer seat
+  lastFilesTouched: [],     // the implementer's own claimed file list, relayed the same way
   failedCases: [],
   lastSmokeSha: null,
   prevReviewSha: null,
@@ -976,6 +980,8 @@ const implementResult = await agent(
 requireAgentResult(implementResult, "IMPLEMENT");
 ctx.branch = implementResult.branch;
 ctx.headSha = implementResult.headSha;
+ctx.lastImplementSummary = implementResult.summary || "";
+ctx.lastFilesTouched = implementResult.filesTouched || [];
 if (implementResult.worktreeBranch) ctx.worktreeBranches.push(implementResult.worktreeBranch);
 ctx.minorsDeferred = ctx.minorsDeferred.concat(implementResult.minorsDeferred || []);
 await reconcileBranch(ctx, implementResult, "Implement", 0);
@@ -1024,7 +1030,11 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
       continue;
     }
     const mode = ctx.prevReviewSha ? { prevSha: ctx.prevReviewSha } : "full";
-    const review = await runReviewPanel("AUTONOMOUS single-feature run,", ctx, devBranch, "GATE RESULTS at " + ctx.headSha + " (pass " + pass + "): " + ctx.gateSummary, mode);
+    const review = await runReviewPanel("AUTONOMOUS single-feature run,", ctx, devBranch,
+      "GATE RESULTS at " + ctx.headSha + " (pass " + pass + "): " + ctx.gateSummary +
+        "\nIMPLEMENTER'S CLAIMS (verify against the diff): summary: " + ctx.lastImplementSummary +
+        "; files touched: " + (ctx.lastFilesTouched.length ? ctx.lastFilesTouched.join(", ") : "(none reported)"),
+      mode);
     if (review.incomplete) { ctx.failureContext = review.critique; await pauseForHuman("Review", "usage_limit", ctx); }
     ctx.prevReviewSha = ctx.headSha; // any later round is a delta over this commit
     if (!review.pass) {
@@ -1205,6 +1215,8 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
       "re-validate the affected cases as a delta, then re-push the non-main branch. Do NOT touch main.\n" + HEAD_SHA_CLAUSE + "\nFailure context:\n" + ctx.failureContext,
     { label: "fix-ci-and-repush", phase: "CI", model: "sonnet", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
   ), "CI FIX");
+  ctx.lastImplementSummary = fix.summary || "";
+  ctx.lastFilesTouched = fix.filesTouched || [];
   // Record worktreeBranch BEFORE the blocker check: pauseForHuman() cleans up worktrees immediately, and a blocked-but-committed fix's side branch must be registered first or cleanup never sees it (same order as reimplement() and the first-implement site).
   if (fix.worktreeBranch) ctx.worktreeBranches.push(fix.worktreeBranch);
   if (isExternalBlocker(fix.blocker)) { ctx.failureContext = fix.blockerDetail || ("blocker=" + fix.blocker); await pauseForHuman("CI", fix.blocker, ctx); }

@@ -38,8 +38,9 @@ read-only behavior; changing code under review is not.
 
 1. The diff under review: `git diff <base>...<headSha>` on the first round, `git diff
    <prevSha>..<headSha>` on a delta round, in the run worktree the prompt names.
-2. The gate results the workflow recorded (unit, lint, typecheck) and the implementer's
-   own claims: its summary, files touched, and any deferrals.
+2. The gate results the workflow recorded (unit, lint, typecheck at that commit) and
+   the implementer's own claims as the workflow relays them: its one-paragraph
+   summary, the files it says it touched, and any deferrals.
 3. The design constraints from the design review, each with its source.
 4. On a delta round: your own open findings from the previous round, by id.
 

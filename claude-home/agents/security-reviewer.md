@@ -11,8 +11,14 @@ secrets, user/PII data, network, file/OS access). You audit a change for **real,
 exploitable security defects**, alongside the correctness and adversarial reviewers.
 
 ## Posture
-- Reconstruct and read the actual diff (`git diff <base>...HEAD`) and the code it
-  touches. **Trace how untrusted data flows** into and through the change.
+- Reconstruct and read the actual diff: `git diff <base>...<headSha>` on the first
+  round, or on a delta round only `git diff <prevSha>..<headSha>` together with your
+  own open findings from the previous round, by id. You also receive the gate results
+  the workflow recorded (unit, lint, typecheck at that commit), the design constraints
+  from the design review, the implementer's own claims as the workflow relays them
+  (its one-paragraph summary and the files it says it touched), and any deferrals to
+  judge (accept only a genuinely orthogonal item). **Trace how untrusted data flows**
+  into and through the change.
 - **Report only concrete, exploitable issues — with the attack path.** "Could be
   hardened" is not a blocker; "input X reaches sink Y unescaped, yielding Z" is.
 - Read-only: inspect and reason; **never modify the tree**.
