@@ -132,6 +132,20 @@ function isExternalBlocker(b) {
   return !!b && b !== "none" && b !== "code";
 }
 
+// M1: a gateCommands object missing (or emptying) one of the three keys
+// runGates reads must never be used partially — that embeds the literal
+// string "undefined" into the gates prompt. Fall back to the
+// documented-commands branch instead, and say which key was missing.
+function validGateCommands(gc) {
+  if (!gc || typeof gc !== "object") return null;
+  const missing = ["unit", "lint", "typecheck"].filter((k) => typeof gc[k] !== "string" || gc[k].length === 0);
+  if (missing.length) {
+    log("args.gateCommands is missing/empty key(s) " + missing.join(", ") + " — falling back to the repository's documented gate commands.");
+    return null;
+  }
+  return gc;
+}
+
 // ---------------------------------------------------------------------------
 // Harness-boundary guards (#76).
 //
@@ -1208,7 +1222,7 @@ async function processFeature(feature, ctx, devBranchName) {
 
 const features = RUN_ARGS.features;
 const devBranch = RUN_ARGS.devBranch || RUN_ARGS.branch;
-const gateCommands = RUN_ARGS.gateCommands && typeof RUN_ARGS.gateCommands === "object" ? RUN_ARGS.gateCommands : null;
+const gateCommands = validGateCommands(RUN_ARGS.gateCommands);
 // args.issue (or args.batchIssue) — OPTIONAL (I6): a GitHub issue for the
 // BATCH itself (Integrate/Ship/CI escalations), distinct from each feature's
 // own required `issue`. When not given, a batch-level escalation posts to the

@@ -282,6 +282,15 @@ test("single: gates helper runs in the run worktree at headSha with the pass num
   assert.match(g.prompt, /pass 1/);
 });
 
+test("single: M1 — a gateCommands object missing a key falls back to the documented-commands branch (no literal 'undefined')", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, gateCommands: { unit: "x" } }, HAPPY);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const g = run.prompts.find((p) => p.label === "gates");
+  assert.ok(g, "gates never dispatched");
+  assert.doesNotMatch(g.prompt, /undefined/);
+  assert.match(g.prompt, /repository's unit tests, lint and type-check/, "falls back to the documented-commands branch");
+});
+
 test("single: DoD schema requires per-case results with a carried flag", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
   const v = run.prompts.find((p) => p.label === "validate-and-dod");
