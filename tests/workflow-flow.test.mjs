@@ -526,6 +526,43 @@ test("single: a deferral a seat rejects becomes a closable finding under its own
   assert.equal(run.result.prUrl, R.ship.prUrl);
 });
 
+test("single: M2 — a deferral accepted by one seat but rejected by another never reaches acceptedDeferrals, regardless of seat order", async () => {
+  const scenario = { ...HAPPY,
+    "implement-tdd": { ...R.implement, minorsDeferred: [{ id: "F9", reason: "out of scope: unrelated module" }] },
+    "adversarial-reviewer": { ...R.reviewPass, deferralVerdicts: [{ id: "F9", accepted: true, note: "fine by me" }] },
+    "correctness-reviewer": (p, o, n) => (n === 0
+      ? { ...R.reviewPass, deferralVerdicts: [{ id: "F9", accepted: false, note: "not orthogonal" }] }
+      : { ...R.reviewPass, resolved: [{ id: "deferral-F9", status: "addressed", note: "fixed in-scope" }] }),
+    "reimplement-after-review": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const v = run.prompts.find((p) => p.label === "validate-and-dod");
+  assert.ok(v, "validate-and-dod never dispatched");
+  assert.match(v.prompt, /ACCEPTED DEFERRALS \(list each under ## Follow-ups\): none/, "a seat's rejection vetoes the accept regardless of processing order");
+  assert.equal(run.result.prUrl, R.ship.prUrl);
+});
+
+test("single: M3 — a defaulted finding id increments past a collision in a gapped ledger", async () => {
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0
+      ? { verdict: "reject", summary: "bad", findings: [{ id: "F2", severity: "blocking", category: "correctness", detail: "first issue", location: "src/a.py:1" }] }
+      : { verdict: "reject", summary: "still bad", findings: [{ severity: "blocking", category: "correctness", detail: "a fresh, unrelated issue", location: "src/b.py:2" }] }),
+    "reimplement-after-review": (p, o, n) => ({ ...R.implement, headSha: n === 0 ? SHA_B : SHA_C }),
+    "root-cause-diagnosis": "diagnosed",
+    "escalate-to-issue": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
+  const re = run.prompts.filter((p) => p.label === "reimplement-after-review");
+  assert.ok(re.length >= 2, "expected at least two reimplement rounds");
+  // The second round's critique must carry BOTH findings under distinct ids —
+  // the old "F" + (size + 1) default would have collided the fresh, unnamed
+  // finding onto "F2" and silently overwritten the first one.
+  assert.match(re[1].prompt, /F2 \[blocking\].*first issue/);
+  assert.match(re[1].prompt, /F3 \[blocking\].*fresh, unrelated issue/);
+});
+
 test("cache-collision guard: a genuine repeated (label, prompt) throws unless cacheable", async () => {
   // Neither workflow script repeats a verbatim prompt for the same label on
   // the happy path, so drive the stub directly with a synthetic script body

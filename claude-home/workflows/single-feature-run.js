@@ -409,11 +409,20 @@ async function runReviewPanel(runLabel, ctx, base, evidence, mode) {
       critique: "### review-infrastructure\nOnly " + valid.length + " of " + expected + " reviewers returned a verdict. An incomplete panel can never pass; the panel must re-run." };
   }
   // Update each seat's ledger: new findings are opened, resolved ones are closed.
+  const deferralVerdictsById = {}; // M2: gathered across ALL seats before deciding acceptance
   for (const r of valid) {
     const ledger = ctx.findings[r.agentType] || (ctx.findings[r.agentType] = {});
     for (const f of r.v.findings || []) {
-      // A finding without an id is still real — default one rather than drop it.
-      const id = f.id || ("F" + (Object.keys(ledger).length + 1));
+      // A finding without an id is still real — default one rather than drop
+      // it. M3: increment past any id already used in THIS seat's ledger — a
+      // gapped ledger (e.g. F1 closed, a later round opens a fresh F1-shaped
+      // finding) must never let two findings collide on the same defaulted id.
+      let id = f.id;
+      if (!id) {
+        let n = Object.keys(ledger).length + 1;
+        id = "F" + n;
+        while (ledger[id]) id = "F" + (++n);
+      }
       ledger[id] = { ...f, id, status: "open" };
     }
     for (const x of r.v.resolved || []) if (ledger[x.id]) ledger[x.id].status = x.status;
@@ -421,11 +430,20 @@ async function runReviewPanel(runLabel, ctx, base, evidence, mode) {
       // Store and render the SAME id ("deferral-" + d.id) so a later `resolved`
       // naming that rendered id actually matches this ledger entry.
       if (!d.accepted) ledger["deferral-" + d.id] = { id: "deferral-" + d.id, severity: "blocking", category: "no-shed", detail: "deferral rejected: " + (d.note || ""), status: "open" };
-      const claim = ctx.minorsDeferred.find((m) => m.id === d.id);
-      if (claim) {
-        ctx.minorsDeferred = ctx.minorsDeferred.filter((m) => m.id !== d.id);
-        if (d.accepted) ctx.acceptedDeferrals.push({ id: claim.id, reason: claim.reason, note: d.note });
-      }
+      (deferralVerdictsById[d.id] || (deferralVerdictsById[d.id] = [])).push(d);
+    }
+  }
+  // M2: a rejection by ANY judging seat vetoes the accept — decide once every
+  // seat's verdict on this deferral id is known, not seat-by-seat. The old
+  // code let whichever seat processed first remove the claim from
+  // ctx.minorsDeferred, so a later seat's rejection on the SAME id never
+  // reached acceptedDeferrals (order-dependent when seats disagree).
+  for (const [id, verdicts] of Object.entries(deferralVerdictsById)) {
+    const claim = ctx.minorsDeferred.find((m) => m.id === id);
+    if (!claim) continue;
+    ctx.minorsDeferred = ctx.minorsDeferred.filter((m) => m.id !== id);
+    if (verdicts.every((d) => d.accepted)) {
+      ctx.acceptedDeferrals.push({ id: claim.id, reason: claim.reason, note: verdicts.map((d) => d.note).filter(Boolean).join("; ") });
     }
   }
   // A seat that says "pass" while its own ledger still holds a blocking,
