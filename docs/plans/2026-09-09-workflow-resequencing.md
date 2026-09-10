@@ -772,6 +772,14 @@ git commit -m "feat(workflow): gates helper in the run worktree; per-case DoD re
 
 ### Task 6: Reorder the loop: gates → review → smoke, delta review, incremental re-smoke, blocking-first reimplement (D2–D5)
 
+> **As built (rulings applied during execution; the code is authoritative where the blocks below differ):**
+> - `detachWorktrees(ctx, phaseName, pass, tag = "reconcile")`: the discriminator is `(pass N, <tag>, head <sha|none>)`; the pre-dispatch detach in `reimplement()` and at the first implement site passes `"before-implement"`, so the two detaches of one pass never share a prompt.
+> - "No new commit": `reimplement()` sets `ctx.lastReimplementNote` and returns without reconcile or pin; the loop appends the note to `ctx.failureContext` and clears it immediately before every reimplement dispatch. The test scenario fails the gates while `n < 2` so a second reimplement exists.
+> - The review evidence carries `(pass N)`. A commit the panel already rejected is never re-reviewed: when `ctx.prevReviewSha === ctx.headSha` and `ctx.lastCritique` is set, the standing critique counts as the reject (budget spent, escalation on the K-th) and the loop goes straight back to implement. `ctx.lastCritique` is set on a reject and cleared on a pass.
+> - The review path hands `ctx.failureContext` (critique plus note) to `reimplement()`, like the validate sites.
+> - A finding without an `id` gets one on ingest (`F<n>` continuing the seat's ledger). A rejected deferral is ledgered as `deferral-<id>` in both key and rendered id, so `resolved` can close it. Judged deferrals leave `ctx.minorsDeferred`; accepted ones go to `ctx.acceptedDeferrals` and `runValidate` renders them for the DoD's Follow-ups.
+> - The temporary Task 5 `runGates(ctx, 1)` call is removed; `meta.description` names the Design stage; `implementResult` is `const`; `reimplement()` records `worktreeBranch` before the blocker check; the smoke-failure reason has a literal fallback.
+
 **Files:**
 - Modify: `claude-home/workflows/single-feature-run.js` — `VERDICT_SCHEMA`, `reviewFocus()`, `runReviewPanel(...)`, the loop, `reimplement()`, `runValidate()`; delete the old inline validate and reimplement agent calls
 - Test: `tests/workflow-flow.test.mjs`
