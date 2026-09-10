@@ -227,31 +227,34 @@ Gate B / PR review, and may optionally run `/code-review` as a courtesy pre-chec
 flowchart TD
     A(["User states task"]) --> GA{{"Gate A: authorize run<br/>scope · features · budget · dev branch"}}
     GA --> B{"Trivial?"}
-    B -->|yes| D["Claude: create non-main branch<br/>dev/feat/fix/chore"]
+    B -->|yes| DES["Design review (Opus):<br/>codebase contracts → constraints"]
     B -->|no| BR["brainstorm if<br/>solution space wide"]
     BR --> P["plan mode"]
     P --> PG{"† User approves<br/>plan?"}
-    PG -->|"yes · or pre-authorized<br/>at Gate A"| D
+    PG -->|"yes · or pre-authorized<br/>at Gate A"| DES
     PG -->|changes| P
 
+    DES --> D["Claude: create non-main branch<br/>dev/feat/fix/chore"]
     D --> E["Claude: TDD implementation"]
     E --> F{"Bug discovered<br/>in scope?"}
     F -->|fix in PR| E
     F -->|orthogonal| G["File GH issue<br/>cross-link to PR"]
     G --> E
-    F -->|none| H["Unit + integration<br/>+ lint + type"]
+    F -->|none| H["Gates: unit + lint + type<br/>(at pinned commit)"]
 
     H --> HG{"Green?"}
     HG -->|no| E
-    HG -->|yes| I["act locally<br/>optional pre-check"]
+    HG -->|yes| REV[["† Review panel (AGENTS)<br/>adversarial: shims · dishonest DoD<br/>correctness: logic · edges · (sec/perf opt-in)"]]
+    REV -->|"reject + critique"| E
+    E -.->|"fix → delta review<br/>(own open findings only)"| REV
+    REV -->|pass| I["act locally<br/>optional pre-check"]
+
     I --> J["Smoke: happy + named edges<br/>+ failure modes"]
     J --> JG{"All cases pass?"}
     JG -->|no| E
     JG -->|yes| K["Claude: DoD report<br/>with transcript"]
 
-    K --> REV[["† Review panel (AGENTS)<br/>adversarial: shims · dishonest DoD<br/>correctness: logic · edges · (sec/perf opt-in)"]]
-    REV -->|"reject + critique"| E
-    REV -->|pass| L["Claude: push branch<br/>(non-main)"]
+    K --> L["Claude: push branch<br/>(non-main)"]
 
     L --> M["Open PR via MCP"]
     M --> N["GitHub Actions runs"]
@@ -259,6 +262,7 @@ flowchart TD
     NG -->|no| O["Read logs via MCP<br/>fix + re-push (autonomous)"]
     O --> N
     NG -->|yes| PR{{"Gate B: user reviews<br/>dev→main PR · merges"}}
+    N -.->|"CI skipped (quota exhausted)"| PR
     PR -->|changes| E
     PR -->|merge| CL["Claude: delete branch<br/>prune worktree · close issues"]
     CL --> Z(["Done"])
@@ -276,7 +280,7 @@ flowchart TD
     class A userAction
     class GA,PG,PR userAction
     class B,F,HG,JG,NG gate
-    class D,E,G,H,I,J,K,L,M,O,CL claudeAction
+    class D,E,G,H,I,J,K,L,M,O,CL,DES claudeAction
     class REV agent
     class CB breaker
 ```
@@ -345,21 +349,17 @@ caps + escalation live in the workflow code.
 flowchart TD
     GA{{"Gate A: authorize federated run<br/>feature list · budget · dev branch"}} --> SPAWN["Workflow spawns N<br/>worktree-isolated agents"]
 
-    SPAWN --> FA["feat A<br/>TDD · validate · DoD"]
-    SPAWN --> FB["feat B<br/>TDD · validate · DoD"]
-    SPAWN --> FC["feat C … ×N<br/>TDD · validate · DoD"]
+    SPAWN --> FA["feat A core<br/>design · TDD · gates · review · smoke · DoD"]
+    SPAWN --> FB["feat B core<br/>design · TDD · gates · review · smoke · DoD"]
+    SPAWN --> FC["feat C … ×N core<br/>design · TDD · gates · review · smoke · DoD"]
 
-    FA --> RA[["review panel"]]
-    FB --> RB[["review panel"]]
-    FC --> RC[["review panel"]]
+    FA -->|"review reject + critique (cap K)"| FA
+    FB -->|"review reject + critique (cap K)"| FB
+    FC -->|"review reject + critique (cap K)"| FC
 
-    RA -->|"reject + critique (cap K)"| FA
-    RB -->|"reject + critique (cap K)"| FB
-    RC -->|"reject + critique (cap K)"| FC
-
-    RA -->|pass| MG["Merge each reviewed-green<br/>feature → dev branch"]
-    RB -->|pass| MG
-    RC -->|pass| MG
+    FA -->|"review pass"| MG["Merge each reviewed-green<br/>feature → dev branch"]
+    FB -->|"review pass"| MG
+    FC -->|"review pass"| MG
 
     MG --> PUSH["Push dev · open ONE<br/>dev→main PR (all DoD reports)"]
     PUSH --> CI["GitHub Actions runs"]
@@ -371,13 +371,11 @@ flowchart TD
 
     classDef gate fill:#fff3e0,stroke:#f57c00,color:#000
     classDef claudeAction fill:#f3e5f5,stroke:#7b1fa2,color:#000
-    classDef agent fill:#d0f0ed,stroke:#00897b,color:#000
     classDef decision fill:#fff3e0,stroke:#f57c00,color:#000
     classDef terminal fill:#e1f5ff,stroke:#0288d1,color:#000
 
     class GA,GB gate
     class SPAWN,FA,FB,FC,MG,PUSH,CI,FIX claudeAction
-    class RA,RB,RC agent
     class CG decision
     class DONE terminal
 ```
@@ -385,10 +383,14 @@ flowchart TD
 **Reading notes**
 
 - D4 **nests** D3 (it is one "Work" iteration) and contains N **cores** of D2
-  (implement → validate → DoD → review) run concurrently — not N full D2s. The
-  push / PR / CI / Gate-B tail happens **once** for the whole batch.
-- The review panel gates **each feature** before it merges onto dev, so a
-  shimmed feature never reaches the shared branch.
+  (design → implement → gates → review → smoke → DoD) run concurrently — not N
+  full D2s. The push / PR / CI / Gate-B tail happens **once** for the whole batch.
+- Each feature runs its **own** design review and spends its **own** two
+  independent K=3 budgets (validate failures, review rejects) — a feature that
+  spent attempts getting gates green still gets a full review-reject budget.
+- The review panel is **part of each feature's own core**, not a downstream
+  stage: it gates that feature before it merges onto dev, so a shimmed
+  feature never reaches the shared branch.
 - Two human touchpoints for the whole batch: **Gate A** (authorize) and **Gate
   B** (merge). Escalation only fires when a cap is exhausted.
 
@@ -406,7 +408,10 @@ reviewer passes; any reject hands the **aggregated** critique back to implementa
   - `adversarial-reviewer` — *did the implementer cheat?* Refute-first: skipped or
     weakened tests, `try/except pass`, hardcoded returns, cast-to-`None`, narrowed
     assertions, unaddressed root cause, missing named edge cases, and **dishonest
-    DoD claims** (does the report match the actual test output?).
+    claims** in the implementer's own summary, files-touched list and deferrals —
+    verified by re-running the gates itself in the run worktree and comparing to
+    the claimed gate results (the smoke and DoD report do not exist yet at this
+    stage, since review now runs before them).
   - `correctness-reviewer` — *is the code actually right?* Traces the logic for real
     bugs the tests never exercised: logic errors, boundary/edge cases, null/empty
     mishandling, mishandled error paths, races, contract violations. Passing tests
@@ -414,8 +419,17 @@ reviewer passes; any reject hands the **aggregated** critique back to implementa
 - **Discretionary — opt in per project** (via the run's `reviewers` arg, defaulted
   from the repo's `CLAUDE.md`): `security-reviewer` and `performance-reviewer`. Off
   by default, so a stats-analysis repo gets no security gate it does not need.
-- **Where:** a **mandatory stage in the autonomous workflow**, after validation +
-  DoD report, before push/integrate; per feature in the federated run. Reject → back
+- **Where:** a **mandatory stage in the autonomous workflow**, after the gates and
+  before the smoke, at the commit pinned in the run worktree; per feature in the
+  federated run. The **first round** reviews the whole diff; **every later round is
+  delta mode** — only the diff since the previous reviewed commit, plus each seat's
+  own open findings by id (a standing rejection, where the implementer produced no
+  new commit, is never re-reviewed). **Inputs:** the diff at `headSha` (`git diff
+  <base>...<headSha>` on the first round, `git diff <prevSha>..<headSha>` on a
+  delta), the gate results, the design-review constraints, and the implementer's
+  own claims (summary, files touched, deferrals) — which the seat verifies against
+  the diff rather than trusting — plus the deferrals it must judge
+  (`deferralVerdicts[]`; an unjudged deferral is a shed). Reject → back
   to implementation **with the aggregated critique** (autonomous retry, under the cap).
 - **Why mechanical, not a rule:** the implementer must not be trusted to summon and
   honestly report its own critics. The **workflow** invokes them with fixed inputs;
@@ -431,13 +445,27 @@ reviewer passes; any reject hands the **aggregated** critique back to implementa
 
 ## 9 — Circuit breaker (no insane loops, no shims)
 
-- Every retry loop (validation, review-reject, CI) has a **hard cap of K
-  iterations**, enforced in workflow code (a counter — not a rule a grinding
-  agent can ignore).
-- On exhaustion: dispatch a **root-cause diagnosis**; if still unresolved,
-  **escalate to the user** — never loop again, never shim.
+- The gates/review/smoke loop spends from **two independent budgets**, each a
+  **hard cap of K iterations** (default K=3), enforced in workflow code (a
+  counter — not a rule a grinding agent can ignore): `validateFailures` (a
+  gates or smoke failure — a code failure) and `reviewRejects` (a panel
+  reject). A validate failure never spends a review reject and vice versa, so
+  the loop runs for **at most 2K passes** in total. CI red/fix is a separate
+  cap of its own K.
+- On exhaustion of either budget: dispatch a **root-cause diagnosis**; if
+  still unresolved, **escalate to the user** — never loop again, never shim.
 - `K` is configurable (default ~3). The cap defeats both compute-burning grind
   and the temptation to shortcut once "just make it pass" gets hard.
+- Every stage — gates, review, smoke, ship, the CI fix — works at a commit
+  **pinned in a run-owned worktree** (`.claude/worktrees/run-<branch-slug>`),
+  never the main working tree: the human works there, and the run only
+  detaches or removes worktrees and branches it owns.
+- **Cleanup runs at every exit**, not only on success: the run's own
+  worktrees are removed (no `--force`; a refusal is reported, not
+  overridden), reconciled side branches that have merged into the run's
+  branch are deleted (`git branch -d`), and `git worktree prune` runs —
+  before the CI-skipped return, before the CI-green return, and before both
+  `escalate()` and `pauseForHuman()` throw.
 - **Escalation mechanism:** on exhaustion, the workflow posts a structured
   comment to the feature's **GitHub issue** (what failed, attempts made,
   root-cause diagnosis, branch/PR state), adds a `needs-human` label, and
@@ -527,14 +555,15 @@ split: `reference/` loads on-demand (see §1).**
 |---|---|---|
 | Task definition | Listens, asks clarifying questions if scope ambiguous | States task (Gate A: authorizes scope, budget, branch) |
 | Planning (non-trivial) | Drafts plan in plan mode | Approves plan (or pre-authorizes at Gate A) |
+| Design review | Reads issue, plan and the repo's stated contracts; returns constraints (Opus), before implementation | — |
 | Branching | Creates `dev/`, `feat/`, `fix/`, `chore/` branch | — |
 | Implementation | TDD: write test → implement → green → refactor | — |
 | Bug handling | Default: fix in-PR. Orthogonal: file GH issue + cross-link | Redirects if defer needed |
 | Test validation | Runs unit, integration, regression, lint, type | — |
 | Local CI pre-check | Optionally runs `act` | — |
+| Review panel | Reviewer agents (adversarial + correctness; security/perf opt-in) invoked with fixed inputs, before the smoke (autonomous) | Reviews PR at Gate B, e.g. `/code-review` (interactive) |
 | Smoke test | Playwright / curl / CLI exercise + named edges + failure modes | — |
 | DoD report | Writes report with required transcript | — (autonomous) or reviews (interactive) |
-| Review panel | Reviewer agents (adversarial + correctness; security/perf opt-in) invoked with fixed inputs (autonomous) | Reviews PR at Gate B, e.g. `/code-review` (interactive) |
 | Push | Pushes non-`main` branch | — |
 | PR open | Opens via GitHub MCP | — |
 | CI monitoring | Reads logs via MCP, commits fixes (capped at K) | — |
@@ -550,7 +579,7 @@ Where each rule fires in the control flow:
 
 | Rule | Enforced at | Mechanism |
 |---|---|---|
-| `definition-of-done.md` | DoD report (D2) + adversarial reviewer (autonomous) + Gate B (interactive) | Report structure required; the adversarial reviewer verifies honesty; user verifies at merge |
+| `definition-of-done.md` | DoD report (D2) + review panel before the smoke (autonomous) | The panel verifies the implementer's claims against the diff and the gate results before the smoke runs; the DoD report is judged at Gate B |
 | `no-shed.md` | Bug-discovered decision (D2) + adversarial reviewer's checklist | Default-fix; orthogonal exception requires GH issue; the adversarial reviewer catches shims |
 | `branch-lifecycle.md` | Branch creation + cleanup (D2) | Naming convention at creation; mandatory delete at close |
 | local-CI-parity *(project ref)* | Optional pre-check (D2) | `act` how-to now in project `docs/references/`; the expected-green principle in the constitution; real CI is the gate |
