@@ -266,6 +266,81 @@ test("single: DoD schema requires per-case results with a carried flag", async (
   assert.equal(v.opts.schema.properties.cases.items.properties.carried.type, "boolean");
 });
 
+test("single: happy path label order", { todo: "Task 7" }, async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assertSequence(run.labels, HAPPY_LABELS);
+  assert.equal(run.result.prUrl, R.ship.prUrl);
+  assert.equal(run.result.headSha, SHA_A);
+});
+
+test("single: a gate failure goes back to implement without a smoke or a review", async () => {
+  const scenario = { ...HAPPY,
+    "gates": (p, o, n) => (n === 0 ? { ...R.gatesPass, pass: false, unit: "1 failed", failureContext: "test_x failed" } : R.gatesPass),
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const l = run.labels;
+  assert.equal(l.filter((x) => x === "gates").length, 2);
+  assert.equal(l.filter((x) => x === "validate-and-dod").length, 1);
+  assert.ok(l.indexOf("adversarial-reviewer") > l.lastIndexOf("gates"), "review waits for green gates");
+  assert.ok(l.indexOf("pin-run-worktree", l.indexOf("reimplement-after-validate")) > -1, "the run worktree is re-pinned after a reimplement");
+});
+
+test("single: a review reject triggers reimplement, then a DELTA review with that seat's own findings, and one smoke", async () => {
+  const reject = { verdict: "reject", summary: "bad", findings: [{ id: "F1", severity: "blocking", category: "correctness", detail: "no ON CONFLICT", location: "src/x.py:10" }] };
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0 ? reject : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed", note: "ok" }] }),
+    "reimplement-after-review": { ...R.implement, headSha: SHA_B, minorsDeferred: [{ id: "F9", reason: "out of scope: unrelated module" }] },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const adv = run.prompts.filter((p) => p.label === "adversarial-reviewer");
+  const cor = run.prompts.filter((p) => p.label === "correctness-reviewer");
+  assert.match(adv[1].prompt, /DELTA REVIEW/);
+  assert.match(adv[1].prompt, /F1 .*no ON CONFLICT/);
+  assert.doesNotMatch(cor[1].prompt, /no ON CONFLICT/, "a seat sees only its own findings");
+  assert.match(adv[1].prompt, new RegExp(SHA_A + "\\.\\." + SHA_B));
+  assert.doesNotMatch(adv[1].prompt, /git diff main\.\.\./, "delta mode does not ask for the full diff");
+  assert.match(adv[1].prompt, /DEFERRALS CLAIMED[\s\S]*F9/, "deferrals are judged by the panel");
+  assert.equal(run.labels.filter((x) => x === "validate-and-dod").length, 1);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-review");
+  assert.match(re.prompt, /every BLOCKING finding first/);
+  assert.match(re.prompt, /no-shed/);
+});
+
+test("single: a smoke failure re-runs the failed cases and reviews the delta, not the full diff", async () => {
+  const scenario = { ...HAPPY,
+    "validate-and-dod": (p, o, n) => (n === 0
+      ? { ...R.dodPass, smokeAllPass: false, failureContext: "AC3 failed", cases: [{ id: "AC1", name: "a", pass: true }, { id: "AC3", name: "fuseki down", pass: false, files: ["src/api/graph.py"] }] }
+      : { ...R.dodPass, cases: [{ id: "AC1", name: "a", pass: true, carried: true }, { id: "AC3", name: "fuseki down", pass: true }] }),
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const v = run.prompts.filter((p) => p.label === "validate-and-dod");
+  assert.match(v[1].prompt, /INCREMENTAL SMOKE/);
+  assert.match(v[1].prompt, /AC3/);
+  assert.match(v[1].prompt, /src\/api\/graph\.py/);
+  assert.match(v[1].prompt, /FULL smoke instead/i, "the fall-back rule is stated to the agent");
+  const adv = run.prompts.filter((p) => p.label === "adversarial-reviewer");
+  assert.equal(adv.length, 2, "the panel re-runs after a fix");
+  assert.match(adv[1].prompt, /DELTA REVIEW/, "…in delta mode even though the previous round passed");
+});
+
+test("single: a reimplement that produces no new commit is a code failure, not a silent re-loop", async () => {
+  const scenario = { ...HAPPY,
+    "gates": (p, o, n) => (n < 2 ? { ...R.gatesPass, pass: false, unit: "1 failed", failureContext: "test_x failed" } : R.gatesPass),
+    "reimplement-after-validate": (p, o, n) => (n === 0 ? R.implement /* same sha as before: nothing committed */ : { ...R.implement, headSha: SHA_B }),
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.filter((p) => p.label === "reimplement-after-validate");
+  assert.equal(re.length, 2);
+  assert.match(re[1].prompt, /produced no new commit/);
+});
+
 test("cache-collision guard: a genuine repeated (label, prompt) throws unless cacheable", async () => {
   // Neither workflow script repeats a verbatim prompt for the same label on
   // the happy path, so drive the stub directly with a synthetic script body

@@ -14,21 +14,32 @@
  *   Gate A has already happened in the main loop (authorize: scope, budget,
  *   target dev branch, GH issue scaffolding). This workflow runs the interior:
  *
+ *     0. DESIGN     one Opus pass over the issue, plan and the repo's stated
+ *                   contracts; returns the constraints every later stage honours.
  *     1. IMPLEMENT  create the non-main branch; TDD (failing test -> implement
  *                   -> green -> refactor). Plan is either pre-approved (passed in
  *                   args) or drafted here when the surface is non-trivial.
- *     2. VALIDATE   unit + integration + regression + lint + type, THEN a smoke
- *                   test (happy path + every named edge + plausible failure
- *                   modes) per reference/definition-of-done.md. Produce the DoD
- *                   report. Failure loops back to IMPLEMENT (capped at K).
- *     3. REVIEW     adversarial-reviewer AGENT, fixed inputs (diff + DoD report +
- *                   test output), structured VERDICT. Reject -> hand the critique
- *                   back to an implementing agent and retry (capped at K). Pass ->
- *                   append the verdict to the DoD report as `## Reviewer Verdict`
- *                   (spec §5, verdict persistence).
- *     4. SHIP       push the non-main branch; open the dev->main PR via MCP, with
+ *     2. GATES      unit + lint + type-check in the run worktree at the pinned
+ *                   commit (spec D2), before any reviewer or smoke spends money
+ *                   on a red build. Failure loops back to IMPLEMENT (capped at K).
+ *     3. REVIEW     the review panel (adversarial + correctness always; opt-in
+ *                   security/performance), fixed inputs (diff + gate results),
+ *                   structured VERDICT. The FIRST round reviews the full diff;
+ *                   every later round is a DELTA review over just the previous
+ *                   panel's own open findings (spec D3). Reject -> hand the
+ *                   critique back to an implementing agent and retry (capped at
+ *                   K). Pass -> append the verdict to the DoD report as
+ *                   `## Reviewer Verdict` (spec §5, verdict persistence).
+ *     4. VALIDATE   integration + regression, THEN a smoke test (happy path +
+ *                   every named edge + plausible failure modes) per
+ *                   reference/definition-of-done.md. A failure re-runs only the
+ *                   failed cases plus anything touching the same files
+ *                   (incremental smoke, spec D4) and re-enters review as a
+ *                   delta. Produce the DoD report. Failure loops back to
+ *                   IMPLEMENT (capped at K, its own budget from Review's).
+ *     5. SHIP       push the non-main branch; open the dev->main PR via MCP, with
  *                   the DoD report (+ verdict) as the body.
- *     5. CI         poll GitHub Actions. Red -> read logs, fix, re-push, re-validate
+ *     6. CI         poll GitHub Actions. Red -> read logs, fix, re-push, re-validate
  *                   as a delta (capped at K). Green -> return the PR URL.
  *
  *   Gate B (the human merging the dev->main PR) happens AFTER this workflow
@@ -51,7 +62,7 @@
 export const meta = {
   name: "single-feature-run",
   description:
-    "Autonomous single-feature dev cycle (D2 as a workflow): TDD implement -> validate + DoD report -> adversarial review -> push + PR -> CI, with every retry loop capped at K=3 and escalation to the feature GitHub issue on exhaustion.",
+    "Autonomous single-feature dev cycle (D2 as a workflow): design review -> TDD implement -> gates -> review -> validate + DoD report -> push + PR -> CI, with every retry loop capped at K=3 and escalation to the feature GitHub issue on exhaustion.",
   phases: [
     {
       title: "Design",
@@ -64,14 +75,19 @@ export const meta = {
         "Create the non-main branch and do TDD: write a failing test, implement to green, refactor. Plan is pre-approved (from args) or drafted here for non-trivial surfaces.",
     },
     {
-      title: "Validate",
+      title: "Gates",
       detail:
-        "Run unit + integration + regression + lint + type, then a smoke test (happy path + every named edge + plausible failure modes) and produce a DoD report. Failure loops back to Implement, capped at K=3.",
+        "Run unit + lint + type-check in the run worktree at the pinned commit (spec D2), before any reviewer or smoke spends money on a red build. Failure loops back to Implement, capped at K=3.",
     },
     {
       title: "Review",
       detail:
-        "Run the review panel (adversarial + correctness always; security/performance opt-in via reviewers): each reviewer reconstructs the diff and re-runs tests vs the claimed results. A reject hands the aggregated critique back to an implementing agent and retries, capped at K=3. Pass appends the verdicts to the DoD report.",
+        "Run the review panel (adversarial + correctness always; security/performance opt-in via reviewers) before the smoke: the first round reconstructs the full diff, every later round reviews only the delta over each seat's own open findings (spec D3). A reject hands the aggregated critique back to an implementing agent and retries, capped at K=3. Pass appends the verdicts to the DoD report.",
+    },
+    {
+      title: "Validate",
+      detail:
+        "Once gates and review are green, run integration + regression, then a smoke test (happy path + every named edge + plausible failure modes) and produce a DoD report. A failure re-runs only the affected cases (incremental smoke, spec D4) and loops back to Implement, capped at K=3.",
     },
     {
       title: "Ship",
@@ -156,6 +172,8 @@ const VERDICT_SCHEMA = {
         additionalProperties: false,
         required: ["category", "severity", "detail"],
         properties: {
+          // Stable across rounds so a DELTA review can resolve it by id (spec D3).
+          id: { type: "string" },
           // Free-form so any reviewer (shim / correctness / security / performance)
           // can use its own category vocabulary.
           category: { type: "string", minLength: 1 },
@@ -167,6 +185,14 @@ const VERDICT_SCHEMA = {
     },
     // The verdict text to persist into the DoD report on pass (spec §5).
     verdictSection: { type: "string" },
+    // DELTA review only: the disposition of each of the seat's own prior open
+    // findings (spec D3). Absent/empty on a full review.
+    resolved: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "status"],
+      properties: { id: { type: "string" }, status: { type: "string", enum: ["addressed", "partially", "unaddressed"] }, note: { type: "string" } } } },
+    // The panel's judgment on each deferral the implementer claimed (no-shed):
+    // an unaccepted deferral is itself a blocking finding.
+    deferralVerdicts: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "accepted"],
+      properties: { id: { type: "string" }, accepted: { type: "boolean" }, note: { type: "string" } } } },
   },
 };
 
@@ -318,7 +344,7 @@ function selectedReviewers() {
 
 function reviewFocus(agentType) {
   if (agentType === "adversarial-reviewer")
-    return "You are the ADVERSARIAL reviewer. Refute-first: PROVE this is not actually done. Hunt for skipped/weakened tests, swallowed errors, hardcoded/stubbed returns, cast-to-None, narrowed assertions, unaddressed root cause, missing named edge cases, and dishonest DoD claims; re-run the suite/smoke yourself and compare to the CLAIMED results.";
+    return "You are the ADVERSARIAL reviewer. Refute-first: PROVE this is not actually done. Hunt for skipped/weakened tests, swallowed errors, hardcoded/stubbed returns, cast-to-None, narrowed assertions, unaddressed root cause, missing named edge cases, and dishonest claims in the implementer's summary, filesTouched and deferrals; re-run the gates yourself in the run worktree and compare to the CLAIMED gate results.";
   if (agentType === "correctness-reviewer")
     return "You are the CORRECTNESS reviewer. Trace the real code and find logic errors, bad boundary/edge handling, null/empty mishandling, mishandled error paths, races, and contract/invariant violations. Passing tests is not correctness.";
   if (agentType === "security-reviewer")
@@ -328,29 +354,33 @@ function reviewFocus(agentType) {
   return "Review this change and return the structured verdict.";
 }
 
-async function runReviewPanel(runLabel, branch, base, dod) {
-  const evidence =
-    "\n\nBranch under review: " + branch + "  (base: " + base + ")\n" +
-    "DERIVE GROUND TRUTH YOURSELF — reconstruct the real diff with `git diff " + base +
-    "...HEAD` on branch '" + branch + "' and read the actual code; do not trust any self-reported " +
-    "file list. Where your lens needs test results, re-run them yourself and compare to the CLAIMED results.\n" +
-    "CLAIMED test output (verify, do not trust): unit=" + dod.tests.unit + " | integration=" +
-    dod.tests.integration + " | regression=" + dod.tests.regression + " | lint=" + dod.tests.lint +
-    " | typecheck=" + dod.tests.typecheck + "\n\nCLAIMED DoD report:\n" + dod.report;
+function renderFindings(list) {
+  return list.map((f) => "- " + f.id + " [" + f.severity + "] " + f.category + (f.location ? " @ " + f.location : "") + ": " + f.detail).join("\n");
+}
 
-  const results = (
-    await parallel(
-      selectedReviewers().map((agentType) => () =>
-        agent(
-          runLabel + " REVIEW (master-design-doc.md §8, spec §5). " + reviewFocus(agentType) +
-            " Return verdict 'pass' only if you found no blocking finding; otherwise 'reject' with specific " +
-            "findings (each naming the triggering case/path and the required fix). On pass, return a short " +
-            "`verdictSection` (markdown)." + evidence,
-          { label: agentType, phase: "Review", agentType: agentType, model: "opus", schema: VERDICT_SCHEMA }
-        ).then((v) => ({ agentType: agentType, v: v }))
-      )
-    )
-  ).filter(Boolean);
+async function runReviewPanel(runLabel, ctx, base, evidence, mode) {
+  const delta = mode && mode.prevSha;
+  const deferrals = ctx.minorsDeferred.length
+    ? "\n\nDEFERRALS CLAIMED BY THE IMPLEMENTER (judge each against no-shed: accept only a genuinely orthogonal item; return `deferralVerdicts`):\n" +
+      ctx.minorsDeferred.map((d) => "- " + d.id + ": " + d.reason).join("\n")
+    : "";
+  const diffInstruction = delta
+    ? "Review ONLY `git diff " + mode.prevSha + ".." + ctx.headSha + "`, in the run worktree `" + ctx.runWorktree + "` (checked out at " + ctx.headSha + ")."
+    : "DERIVE GROUND TRUTH YOURSELF — reconstruct the real diff with `git diff " + base + "..." + ctx.headSha + "` in the run worktree `" + ctx.runWorktree + "` and read the actual code; do not trust any self-reported file list.";
+  const results = (await parallel(selectedReviewers().map((agentType) => () => {
+    const open = Object.values(ctx.findings[agentType] || {}).filter((f) => f.status !== "addressed");
+    const header = delta
+      ? "DELTA REVIEW (spec D3): a previous panel reviewed commit " + mode.prevSha + ". Your own open findings are listed below with ids. " +
+        "For every one return its `resolved` status (addressed | partially | unaddressed) with a note citing path:line. Report NEW findings only if the delta introduces them; continue the id numbering. " +
+        "Return verdict 'pass' only if every open finding is addressed and the delta introduces nothing blocking.\n\nYOUR OPEN FINDINGS:\n" + (open.length ? renderFindings(open) : "(none)") + "\n\n"
+      : "";
+    return agent(
+      header + runLabel + " REVIEW (master-design-doc.md §8, spec §5). " + reviewFocus(agentType) +
+        " Give every finding a stable id (F1, F2, …). Return verdict 'pass' only if you found no blocking finding; otherwise 'reject' with specific findings (each naming the triggering case/path and the required fix). On pass, return a short `verdictSection` (markdown).\n\n" +
+        "Branch under review: " + ctx.branch + " at commit " + ctx.headSha + " (base: " + base + ")\n" + diffInstruction + "\n" + constraintsClause(ctx) + "\n" + evidence + deferrals,
+      { label: agentType, phase: "Review", agentType: agentType, model: "opus", schema: VERDICT_SCHEMA }
+    ).then((v) => ({ agentType, v }));
+  }))).filter(Boolean);
 
   // An incomplete panel must never pass: a dead reviewer (null result) is not a
   // pass-by-absence. Without this, a panel whose reviewers all die (e.g. on a
@@ -359,33 +389,23 @@ async function runReviewPanel(runLabel, branch, base, dod) {
   const expected = selectedReviewers().length;
   const valid = results.filter((r) => r.v && r.v.verdict);
   if (valid.length < expected) {
-    return {
-      pass: false,
-      incomplete: true,
-      critique:
-        "### review-infrastructure\nOnly " + valid.length + " of " + expected +
-        " reviewers returned a verdict (reviewer agent death, likely a usage-limit interruption). " +
-        "An incomplete panel can never pass; the panel must re-run.",
-      rejectedBy: "incomplete-panel(" + valid.length + "/" + expected + ")",
-    };
+    return { pass: false, incomplete: true, rejectedBy: "incomplete-panel(" + valid.length + "/" + expected + ")",
+      critique: "### review-infrastructure\nOnly " + valid.length + " of " + expected + " reviewers returned a verdict. An incomplete panel can never pass; the panel must re-run." };
   }
-
-  const rejected = valid.filter((r) => r.v.verdict === "reject");
+  // Update each seat's ledger: new findings are opened, resolved ones are closed.
+  for (const r of valid) {
+    const ledger = ctx.findings[r.agentType] || (ctx.findings[r.agentType] = {});
+    for (const f of r.v.findings || []) if (f.id) ledger[f.id] = { ...f, status: "open" };
+    for (const x of r.v.resolved || []) if (ledger[x.id]) ledger[x.id].status = x.status;
+    for (const d of r.v.deferralVerdicts || []) if (!d.accepted) ledger["deferral-" + d.id] = { id: d.id, severity: "blocking", category: "no-shed", detail: "deferral rejected: " + (d.note || ""), status: "open" };
+  }
+  const rejected = valid.filter((r) => r.v.verdict === "reject" || (r.v.deferralVerdicts || []).some((d) => !d.accepted));
   if (rejected.length === 0) {
-    const verdictSection = valid
-      .map((r) => (r.v && r.v.verdictSection) ? r.v.verdictSection : "## Reviewer Verdict\nPASS — " + r.agentType + ".")
-      .join("\n\n");
-    return { pass: true, verdictSection: verdictSection };
+    return { pass: true, verdictSection: valid.map((r) => r.v.verdictSection || ("## Reviewer Verdict\nPASS — " + r.agentType + ".")).join("\n\n") };
   }
-  const critique = rejected
-    .map((r) =>
-      "### " + r.agentType + "\n" + (r.v.summary || "") + "\n" +
-      (r.v.findings || [])
-        .map((f) => "- [" + f.severity + "] " + f.category + (f.location ? " @ " + f.location : "") + ": " + f.detail)
-        .join("\n")
-    )
-    .join("\n\n");
-  return { pass: false, critique: critique, rejectedBy: rejected.map((r) => r.agentType).join(", ") };
+  const critique = rejected.map((r) => "### " + r.agentType + "\n" + (r.v.summary || "") + "\n" +
+    renderFindings(Object.values(ctx.findings[r.agentType]).filter((f) => f.status !== "addressed"))).join("\n\n");
+  return { pass: false, critique, rejectedBy: rejected.map((r) => r.agentType).join(", ") };
 }
 
 // The ship result: the opened PR.
@@ -605,11 +625,15 @@ function runOwnsBranch(ctx) {
 }
 
 /** Detach every worktree that holds ctx.branch so the next implementer can
- * check it out; the detached paths become run-owned (spec D1, D6). */
-async function detachWorktrees(ctx, phaseName, pass) {
+ * check it out; the detached paths become run-owned (spec D1, D6). `tag`
+ * distinguishes an explicit pre-dispatch detach (e.g. reimplement's own call)
+ * from the one reconcileBranch issues for itself, so two calls in the same
+ * pass at the same head never produce a byte-identical, cache-colliding
+ * prompt. */
+async function detachWorktrees(ctx, phaseName, pass, tag = "reconcile") {
   if (!runOwnsBranch(ctx)) return { ok: true, detached: [] };
   const r = await mechanical(ctx, "detach-worktrees", phaseName,
-    "(pass " + pass + ", head " + (ctx.headSha || "none") + ")\n" +
+    "(pass " + pass + ", " + tag + ", head " + (ctx.headSha || "none") + ")\n" +
       "1. `git worktree list --porcelain` — for every worktree whose `branch` line is `refs/heads/" + ctx.branch + "` " +
       "and whose path is NOT the main working tree, run `git -C <path> checkout --detach`.\n" +
       "2. Return ok=true and `detached` = the absolute paths you detached (empty if none).",
@@ -683,6 +707,65 @@ async function cleanupWorktrees(ctx, phaseName, tag) {
   }
 }
 
+/** One reimplement dispatch with its fixed surrounding steps: detach, the
+ * implementer, reconcile, pin (spec D1, D5). Blocking findings first, minors
+ * as separate commits; a deferral is a claim the panel judges (no-shed). */
+async function reimplement(label, why, context, pass) {
+  await detachWorktrees(ctx, "Implement", pass, "before-implement");
+  const before = ctx.headSha;
+  const r = requireAgentResult(await agent(
+    "AUTONOMOUS run, " + why + " (master-design-doc.md §5/§8) — pass " + pass + ". Fix the ROOT CAUSE — do NOT weaken tests, skip cases, or shim. " +
+      "Fix in-scope bugs in this change (no-shed); file only genuinely orthogonal bugs as cross-linked GH issues.\n" +
+      "ORDER OF WORK: every BLOCKING finding first, each fixed and committed; then every minor finding as its own commit. " +
+      "List in `minorsDeferred` only an item you judge genuinely out of scope, with the reason; the review panel judges every deferral and rejects a shed.\n" +
+      constraintsClause(ctx) + HEAD_SHA_CLAUSE +
+      "COMMIT DISCIPLINE (reference/workflow-autonomy.md): commit after every green test cycle.\n" +
+      "BLOCKERS: for an external condition you cannot fix return blocker='credentials'|'infra'|'billing'|'ambiguity' with blockerDetail; otherwise blocker='none'.\n\n" +
+      "Branch: " + ctx.branch + " at " + ctx.headSha + "\n" + context,
+    { label, phase: "Implement", model: "sonnet", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
+  ), "IMPLEMENT");
+  if (isExternalBlocker(r.blocker)) {
+    ctx.failureContext = r.blockerDetail || ("blocker=" + r.blocker);
+    await pauseForHuman("Implement", r.blocker, ctx);
+  }
+  if (r.worktreeBranch) ctx.worktreeBranches.push(r.worktreeBranch);
+  ctx.minorsDeferred = ctx.minorsDeferred.concat(r.minorsDeferred || []);
+  if (r.headSha === before) {
+    // Nothing was committed: the next pass would replay cached gate results forever.
+    ctx.lastReimplementNote = "reimplement produced no new commit at " + before + "; the previous failure stands";
+    return r;
+  }
+  await reconcileBranch(ctx, r, "Implement", pass);
+  await pinRunWorktree(ctx, "Implement", pass);
+  return r;
+}
+
+/** The validate stage in the run worktree: full on the first smoke of a
+ * lineage; incremental after a smoke failure (spec D4). */
+async function runValidate(ctx, pass) {
+  const incremental = ctx.failedCases.length > 0 && ctx.lastSmokeSha;
+  const scope = incremental
+    ? "INCREMENTAL SMOKE (spec D4): the smoke at " + ctx.lastSmokeSha + " failed: " +
+      ctx.failedCases.map((c) => c.id + " (" + c.name + (c.files && c.files.length ? "; files " + c.files.join(", ") : "") + ")").join("; ") + ". " +
+      "First run `git diff --name-only " + ctx.lastSmokeSha + ".." + ctx.headSha + "`. If that list touches a dependency manifest, a Dockerfile, a compose file, an nginx template, or any file that no failed case names, run the FULL smoke instead and say why in the report. " +
+      "Otherwise re-run the failed cases and every case whose `files` overlap the changed files, plus a health check of the stack; report every case in `cases` with the same ids, marking cases you did not re-run `carried: true` with their last real `pass` and detail 'carried from " + ctx.lastSmokeSha + "'. " +
+      "Keep the stack up between attempts; rebuild images only if a dependency, Dockerfile or nginx template changed.\n"
+    : "FULL SMOKE: ";
+  return agent(
+    "AUTONOMOUS single-feature run, VALIDATE phase — pass " + pass + (resumeNonce ? ", resume " + resumeNonce : "") + " (spec D4; reference/definition-of-done.md). " +
+      "Work in the run worktree `" + ctx.runWorktree + "` at commit " + ctx.headSha + " (verify with `git rev-parse HEAD`). Never checkout, rebuild or write to the main working tree.\n" +
+      "STEP 0 — PREFLIGHT, before running a single test: an LLM key via ONE minimal call; the Docker daemon (`docker info` within 15 s) and service health; at least 10 GB free on Docker's volume; GitHub reachability if the smoke needs it. On any failure STOP and return gatesPass=false, smokeAllPass=false, blocker = 'infra' | 'credentials' | 'billing' | 'usage_limit', blockerDetail = the exact error. Never retry a preflight, never attempt host recovery, never read credentials.\n" +
+      "STEP 1 — integration + regression suites at this commit. Unit, lint and type-check already passed (" + ctx.gateSummary + "); copy those into `tests`.\n" +
+      "STEP 2 — " + scope + "the happy path, EVERY named edge case in the issue/spec (or derive and list them), and the plausible failure modes for the surface touched, against the running system. " +
+      "REPORT EVERY SMOKE CASE in `cases` with a stable id (AC1, AC2, … in the issue's order, then E1… for derived edges and F1… for failure modes), `pass`, a one-line `detail`, and the source files the case exercises in `files`.\n" +
+      "Set blocker='code' when a case fails because of the change; 'ambiguity' when acceptance criteria cannot be derived; a preflight kind when a resource failed mid-smoke; 'none' when everything passed.\n" +
+      "Produce the DoD report with the exact structure from reference/definition-of-done.md (## Changes / ## Tests / ## Smoke test transcript / ## Docs updated / ## Follow-ups). Under ## Smoke test transcript render the re-run cases as a table and, if any, a separate list 'Carried forward (not re-run this pass)'. Under ## Follow-ups list every accepted deferral from the review panel.\n" +
+      "gatesPass is true ONLY if every suite passed; smokeAllPass ONLY if every case in `cases` has pass=true.\n\n" +
+      "Feature: " + featureDescription + "\nLinked issue: " + issueRef,
+    { label: "validate-and-dod", phase: "Validate", model: "sonnet", schema: DOD_SCHEMA }
+  );
+}
+
 // ===========================================================================
 // MAIN FLOW
 // ===========================================================================
@@ -750,6 +833,7 @@ const ctx = {
   reviewVerdictSection: "",
   prUrl: null,
   failureContext: "",
+  lastReimplementNote: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -775,14 +859,20 @@ ctx.constraints = design.constraints;
 log("Design review: " + ctx.constraints.length + " constraints, " + design.risks.length + " risks.");
 
 // ---------------------------------------------------------------------------
-// PHASE 1+2+3 — Implement / Validate / Review.
+// PHASE 1+2+3+4 — Implement / Gates / Review / Validate.
 //
-// These three phases form ONE capped outer loop: a reviewer reject and a
-// validation failure BOTH send control back to implementation, and both share
-// the single K-cap as required by the diagram (master-design-doc.md §5: HG/JG/REV all
-// loop back to E, "every loop capped at K"). We count every trip back to
-// implementation. We never re-enter without spending an attempt; the counter is
-// the only thing that decides whether we loop, never an agent.
+// After the first implement, Gates, Review and Validate form ONE loop
+// (reimplement()), reordered per spec D2-D5: gates run first so a red build
+// never reaches a reviewer or a smoke; review runs before the smoke, in DELTA
+// mode over each seat's own open findings from its second round on; the smoke
+// only runs once gates AND review are both green for the current commit, and
+// re-runs incrementally (spec D4) after a failure. A gates failure, a review
+// reject, and a smoke failure all send control back to implementation via
+// reimplement() — but they spend TWO INDEPENDENT budgets, not one:
+// validateFailures (gates + smoke, both code failures) and reviewRejects
+// (panel rejects), each capped at K. We never re-enter without spending an
+// attempt; the counters are the only thing that decide whether we loop, never
+// an agent.
 // ---------------------------------------------------------------------------
 
 phase("Implement");
@@ -794,7 +884,7 @@ const planClause = preApprovedPlan
   ? "A plan was pre-approved at Gate A; follow it:\n" + preApprovedPlan + "\n"
   : "No plan was pre-approved. If the surface is non-trivial (anything beyond a <=10-line, single-file, no-behavior-change edit per master-design-doc.md §14.1), draft a short plan first, then implement it.\n";
 
-await detachWorktrees(ctx, "Implement", 0);
+await detachWorktrees(ctx, "Implement", 0, "before-implement");
 
 let implementResult = await agent(
   "AUTONOMOUS single-feature run, IMPLEMENT phase (master-design-doc.md §5, D2).\n" +
@@ -833,172 +923,71 @@ if (implementResult.worktreeBranch) ctx.worktreeBranches.push(implementResult.wo
 ctx.minorsDeferred = ctx.minorsDeferred.concat(implementResult.minorsDeferred || []);
 await reconcileBranch(ctx, implementResult, "Implement", 0);
 await pinRunWorktree(ctx, "Implement", 0);
-// TEMPORARY (Task 5): dispatched once here so the helper and its schema are
-// exercised before the loop rewrite; Task 6 moves this call into the
-// validate/review loop and wires the failure branch.
-const g = await runGates(ctx, 1);
-if (isExternalBlocker(g.blocker)) {
-  ctx.failureContext = g.blockerDetail || ("blocker=" + g.blocker);
-  await pauseForHuman("Gates", g.blocker, ctx);
-}
-ctx.gateSummary = "unit: " + g.unit + "; lint: " + g.lint + "; typecheck: " + g.typecheck;
 if (isExternalBlocker(implementResult.blocker)) {
   ctx.failureContext = implementResult.blockerDetail || ("blocker=" + implementResult.blocker);
   await pauseForHuman("Implement", implementResult.blocker, ctx);
 }
 log("Implementation branch: " + ctx.branch + ". Entering the validate/review loop (cap K=" + K + ").");
 
-let dodReport = null; // the passing DoD report (with verdict appended) for the PR
-
-// Counter-controlled outer loop. The loop is structurally bounded by 2K passes
-// and by the two INDEPENDENT budgets below. There is no agent-controlled
-// `continue`.
-//
-// Two budgets, not one (changed 2026-09-05). Validate failures and reviewer
-// rejects are different loops per the contract in the file header ("Reject ->
-// hand the critique back ... and retry (capped at K)"). Sharing one counter
-// meant a feature that spent K-1 attempts getting Validate green met a review
-// panel whose first reject was unappealable by construction — exactly what
-// happened on GH #299: three "attempts" on the escalation, review ran once,
-// its finding was never worked. Each loop now has its own K; the pass number
-// is reported alongside so the escalation text is honest.
+let dodReport = null;
 let reviewed = false;
-let validateFailures = 0;
-let reviewRejects = 0;
+let validateFailures = 0; // gates or smoke failures on code (one budget)
+let reviewRejects = 0;    // panel rejects (the other budget)
+let reviewPassedAt = null; // the headSha the panel last passed
 for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
-  log(
-    "Validate/review pass " + pass + " (validate failures " + validateFailures + "/" + K +
-      ", review rejects " + reviewRejects + "/" + K + ")."
-  );
-  const attempt = pass; // kept for the Validate prompt's cache-busting "attempt N"
+  log("Pass " + pass + " (code failures " + validateFailures + "/" + K + ", review rejects " + reviewRejects + "/" + K + ") at " + ctx.headSha);
 
-  // ---- PHASE 2: VALIDATE + DoD report -----------------------------------
-  phase("Validate");
-  const dod = await agent(
-    "AUTONOMOUS single-feature run, VALIDATE phase — attempt " + attempt + " of " + K +
-      (resumeNonce ? ", resume " + resumeNonce : "") +
-      " (master-design-doc.md §5, D2; reference/definition-of-done.md).\n" +
-      "STEP 0 — PREFLIGHT, before running a single test. List every external resource the issue's acceptance criteria depend on and verify each with the cheapest possible check: an LLM key via ONE minimal call through the app's configured provider; the Docker daemon (`docker info` answers within 15 s) and the target services' health endpoints; at least 10 GB free on the volume holding Docker's data; GitHub reachability if the smoke needs it. If any check fails, STOP: return gatesPass=false, smokeAllPass=false, blocker = the matching kind ('infra' | 'credentials' | 'billing' | 'usage_limit') and blockerDetail = the exact error text. Never retry a preflight, never attempt host recovery, never enter or read credentials.\n" +
-      "STEP 1 — integration + regression suites at this commit. Unit, lint and type-check already passed (" + ctx.gateSummary + "); copy those into `tests`.\n" +
-      "STEP 2 — SMOKE against the running system: the happy path, EVERY named edge case in the feature/issue/spec (or, if none are stated, derive them explicitly and list them), and the most plausible failure modes for the surface touched. If the stack is in the dev shape (bind-mounted source), do NOT rebuild images for code changes — rebuild only when dependencies, a Dockerfile, or the nginx template changed.\n" +
-      "REPORT EVERY SMOKE CASE in `cases` with a stable id (AC1, AC2, … in the issue's order, then E1… for derived edges and F1… for failure modes), `pass`, a one-line `detail`, and the source files the case exercises in `files`.\n" +
-      "Set blocker='code' when a gate or smoke case fails because of the change; 'ambiguity' when the issue/spec is contradictory or under-specified and acceptance criteria cannot be derived; a preflight kind when an external resource failed mid-smoke; 'none' when everything passed.\n" +
-      "Produce a DoD report with the exact structure from reference/definition-of-done.md " +
-      "(## Changes / ## Tests / ## Smoke test transcript / ## Docs updated / ## Follow-ups), including the real transcript. " +
-      "Be honest: gatesPass is true ONLY if every test gate AND every smoke case actually passed.\n\n" +
-      "Feature: " + featureDescription + "\nLinked issue: " + issueRef,
-    {
-      label: "validate-and-dod",
-      phase: "Validate",
-      model: "sonnet",
-      schema: DOD_SCHEMA,
-    }
-  );
-
-  if (!dod) {
-    ctx.failureContext = "VALIDATE agent died without returning a DoD result (usage-limit or harness interruption).";
-    await pauseForHuman("Validate", "usage_limit", ctx);
-  }
-  if (isExternalBlocker(dod.blocker)) {
-    ctx.failureContext = dod.blockerDetail || dod.failureContext || ("blocker=" + dod.blocker);
-    await pauseForHuman("Validate", dod.blocker, ctx);
-  }
-  if (!dod.gatesPass || !dod.smokeAllPass) {
-    // A genuine code failure — the ONLY kind that may spend the Validate budget.
+  // ---- GATES (spec D2) ----------------------------------------------------
+  phase("Gates");
+  const g = await runGates(ctx, pass);
+  if (isExternalBlocker(g.blocker)) { ctx.failureContext = g.blockerDetail || ("blocker=" + g.blocker); await pauseForHuman("Gates", g.blocker, ctx); }
+  if (!g.pass) {
     validateFailures++;
-    ctx.failureContext =
-      "Validation/DoD failed (validate failure " + validateFailures + " of " + K + ", pass " + pass + "). " +
-      (dod.failureContext || "Gates or smoke cases did not pass.");
-    log("Validation failed (" + validateFailures + "/" + K + "). " + ctx.failureContext);
+    ctx.failureContext = "Gates failed (code failure " + validateFailures + " of " + K + ", pass " + pass + "): " + (g.failureContext || "unit/lint/typecheck red");
+    if (validateFailures === K) await escalate("Gates", validateFailures, ctx);
+    if (ctx.lastReimplementNote) { ctx.failureContext += "\n" + ctx.lastReimplementNote; ctx.lastReimplementNote = null; }
+    await reimplement("reimplement-after-validate", "back to IMPLEMENT after a GATES failure", ctx.failureContext, pass);
+    continue;
+  }
+  ctx.gateSummary = "unit: " + g.unit + "; lint: " + g.lint + "; typecheck: " + g.typecheck;
 
-    if (validateFailures === K) {
-      // Validate budget exhausted — escalate, never loop again.
-      await escalate("Validate", validateFailures, ctx);
+  // ---- REVIEW (spec D2/D3): before the smoke; delta mode whenever a prior round exists ----
+  if (reviewPassedAt !== ctx.headSha) {
+    phase("Review");
+    const mode = ctx.prevReviewSha ? { prevSha: ctx.prevReviewSha } : "full";
+    const review = await runReviewPanel("AUTONOMOUS single-feature run,", ctx, devBranch, "GATE RESULTS at " + ctx.headSha + ": " + ctx.gateSummary, mode);
+    if (review.incomplete) { ctx.failureContext = review.critique; await pauseForHuman("Review", "usage_limit", ctx); }
+    ctx.prevReviewSha = ctx.headSha; // any later round is a delta over this commit
+    if (!review.pass) {
+      reviewRejects++;
+      ctx.failureContext = "Review panel rejected (reject " + reviewRejects + " of " + K + ", pass " + pass + ", by: " + review.rejectedBy + "):\n" + review.critique;
+      if (reviewRejects === K) await escalate("Review", reviewRejects, ctx);
+      if (ctx.lastReimplementNote) { ctx.failureContext += "\n" + ctx.lastReimplementNote; ctx.lastReimplementNote = null; }
+      await reimplement("reimplement-after-review", "back to IMPLEMENT after a REVIEW reject", "Reviewer critique:\n" + review.critique, pass);
+      continue;
     }
-
-    // Hand the failure back to the implementer and spend the next attempt.
-    implementResult = await agent(
-      "AUTONOMOUS run, back to IMPLEMENT after a VALIDATE failure (master-design-doc.md §5). " +
-        "Fix the root cause — do NOT weaken tests, skip cases, or shim. Keep TDD discipline.\n\n" +
-        "COMMIT DISCIPLINE (reference/workflow-autonomy.md): commit after every green test cycle; never leave more than one task's work uncommitted — if you are interrupted, committed work is the only work that survives.\n" +
-        "BLOCKERS: if you hit an external condition you cannot fix — a missing/invalid credential, a dead daemon or service, a billing refusal, or an issue/spec too ambiguous to derive acceptance criteria from — STOP and return blocker='credentials'|'infra'|'billing'|'ambiguity' with blockerDetail; otherwise return blocker='none'.\n\n" +
-        "Branch: " +
-        ctx.branch +
-        "\nWhat failed:\n" +
-        ctx.failureContext,
-      {
-        label: "reimplement-after-validate",
-        phase: "Implement",
-        model: "sonnet",
-        schema: IMPLEMENT_SCHEMA,
-        isolation: "worktree",
-      }
-    );
-    requireAgentResult(implementResult, "IMPLEMENT");
-    ctx.branch = implementResult.branch;
-    if (isExternalBlocker(implementResult.blocker)) {
-      ctx.failureContext = implementResult.blockerDetail || ("blocker=" + implementResult.blocker);
-      await pauseForHuman("Implement", implementResult.blocker, ctx);
-    }
-    continue; // counter-controlled: the for-condition decides if we loop
+    reviewPassedAt = ctx.headSha;
+    ctx.reviewVerdictSection = review.verdictSection;
   }
 
-  log("Validation + DoD report green on attempt " + attempt + ". Dispatching adversarial review.");
-
-  // ---- PHASE 3: REVIEW PANEL (adversarial + correctness always; security/perf opt-in) ----
-  phase("Review");
-  const review = await runReviewPanel("AUTONOMOUS single-feature run,", ctx.branch, devBranch, dod);
-
-  if (review.incomplete) {
-    // Dead reviewers (usage-limit) are not a rejection: never hand this to an implementer.
-    ctx.failureContext = review.critique;
-    await pauseForHuman("Review", "usage_limit", ctx);
+  // ---- SMOKE (spec D4): once after review; incremental after a failure ----
+  phase("Validate");
+  const dod = await runValidate(ctx, pass);
+  if (!dod) { ctx.failureContext = "VALIDATE agent died without returning a DoD result."; await pauseForHuman("Validate", "usage_limit", ctx); }
+  if (isExternalBlocker(dod.blocker)) { ctx.failureContext = dod.blockerDetail || dod.failureContext || ("blocker=" + dod.blocker); await pauseForHuman("Validate", dod.blocker, ctx); }
+  if (!dod.gatesPass || !dod.smokeAllPass) {
+    validateFailures++;
+    ctx.failedCases = (dod.cases || []).filter((c) => !c.pass);
+    ctx.lastSmokeSha = ctx.headSha;
+    ctx.failureContext = "Smoke failed (code failure " + validateFailures + " of " + K + ", pass " + pass + "): " + (dod.failureContext || ctx.failedCases.map((c) => c.id + " " + c.name).join(", "));
+    if (validateFailures === K) await escalate("Validate", validateFailures, ctx);
+    if (ctx.lastReimplementNote) { ctx.failureContext += "\n" + ctx.lastReimplementNote; ctx.lastReimplementNote = null; }
+    await reimplement("reimplement-after-validate", "back to IMPLEMENT after a SMOKE failure", ctx.failureContext, pass);
+    continue;
   }
-
-  if (!review.pass) {
-    // Reject is transient — the aggregated panel critique IS the retry context (spec §5).
-    reviewRejects++;
-    ctx.failureContext =
-      "Review panel rejected (review reject " + reviewRejects + " of " + K + ", pass " + pass +
-      "; by: " + review.rejectedBy + "):\n" + review.critique;
-    log("Review REJECTED (" + reviewRejects + "/" + K + ") by " + review.rejectedBy + ". Handing the critique back to implementation.");
-
-    if (reviewRejects === K) {
-      // Review budget exhausted — escalate, never loop again, never shim.
-      await escalate("Review", reviewRejects, ctx);
-    }
-
-    implementResult = await agent(
-      "AUTONOMOUS run, back to IMPLEMENT after a REVIEW reject (master-design-doc.md §8). " +
-        "Address EVERY blocking finding by fixing the ROOT CAUSE. Do NOT weaken tests or shim to satisfy a reviewer.\n\n" +
-        "COMMIT DISCIPLINE (reference/workflow-autonomy.md): commit after every green test cycle; never leave more than one task's work uncommitted — if you are interrupted, committed work is the only work that survives.\n" +
-        "BLOCKERS: if you hit an external condition you cannot fix — a missing/invalid credential, a dead daemon or service, a billing refusal, or an issue/spec too ambiguous to derive acceptance criteria from — STOP and return blocker='credentials'|'infra'|'billing'|'ambiguity' with blockerDetail; otherwise return blocker='none'.\n\n" +
-        "Branch: " +
-        ctx.branch +
-        "\nReviewer critique:\n" +
-        review.critique,
-      {
-        label: "reimplement-after-review",
-        phase: "Implement",
-        model: "sonnet",
-        schema: IMPLEMENT_SCHEMA,
-        isolation: "worktree",
-      }
-    );
-    requireAgentResult(implementResult, "IMPLEMENT");
-    ctx.branch = implementResult.branch;
-    if (isExternalBlocker(implementResult.blocker)) {
-      ctx.failureContext = implementResult.blockerDetail || ("blocker=" + implementResult.blocker);
-      await pauseForHuman("Implement", implementResult.blocker, ctx);
-    }
-    continue; // counter-controlled
-  }
-
-  // PASS — every dispatched reviewer passed. Persist their verdicts into the DoD
-  // report so they travel with the PR to Gate B (spec §5, verdict persistence).
-  dodReport = dod.report + "\n\n" + review.verdictSection;
+  dodReport = dod.report + "\n\n" + ctx.reviewVerdictSection;
   reviewed = true;
-  log("Review panel PASSED on pass " + pass + ". Verdicts appended to the DoD report.");
+  log("Gates, review and smoke green at " + ctx.headSha + ".");
 }
 
 // If the loop exited without a review pass and without escalating, that is a bug
@@ -1010,7 +999,7 @@ if (!reviewed || !dodReport) {
 }
 
 // ---------------------------------------------------------------------------
-// PHASE 4 — SHIP. Push the non-main branch and open the dev->main PR.
+// PHASE 5 — SHIP. Push the non-main branch and open the dev->main PR.
 // ---------------------------------------------------------------------------
 phase("Ship");
 const ship = requireAgentResult(await agent(
@@ -1044,7 +1033,7 @@ if (isExternalBlocker(ship.blocker) || !ship.pushed || !ship.prUrl) {
 log("Branch pushed and PR opened: " + ctx.prUrl);
 
 // ---------------------------------------------------------------------------
-// PHASE 5 — CI. Poll GitHub Actions; on red, fix + re-push, capped at K.
+// PHASE 6 — CI. Poll GitHub Actions; on red, fix + re-push, capped at K.
 //
 // Two counters here, both bounded by K:
 //   - `fixAttempt` caps how many times we fix-and-re-push a RED pipeline.
