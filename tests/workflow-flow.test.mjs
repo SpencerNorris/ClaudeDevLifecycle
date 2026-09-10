@@ -326,6 +326,16 @@ test("single: ship and CI prompts name the commit; the PR body is scrubbed after
   assert.match(run.prompts.find((p) => p.label === "poll-ci").prompt, new RegExp(SHA_A));
 });
 
+test("single: a pending poll is not replayed as a cache collision; it resolves on the next poll", async () => {
+  const scenario = { ...HAPPY,
+    "poll-ci": (p, o, n) => (n === 0 ? { status: "pending", blocker: "none" } : R.ciGreen),
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.equal(run.prompts.filter((p) => p.label === "poll-ci").length, 2);
+  assert.equal(run.result.prUrl, R.ship.prUrl);
+});
+
 test("single: a gate failure goes back to implement without a smoke or a review", async () => {
   const scenario = { ...HAPPY,
     "gates": (p, o, n) => (n === 0 ? { ...R.gatesPass, pass: false, unit: "1 failed", failureContext: "test_x failed" } : R.gatesPass),

@@ -804,7 +804,7 @@ async function scrubPrBody(ctx) {
  * scope; polling then decides from the run's own billing annotation. */
 async function checkQuota(ctx) {
   return mechanical(ctx, "quota-check", "CI",
-    "(PR " + ctx.prUrl + ")\n" +
+    "(PR " + ctx.prUrl + ", head " + ctx.headSha + (resumeNonce ? ", resume " + resumeNonce : "") + ")\n" +
       "1. `login=$(gh api user --jq .login)`; then `gh api /users/$login/settings/billing/actions`.\n" +
       "2. If the call fails (404 or a scope error), return quota='unknown' with the error text as detail.\n" +
       "3. Otherwise compare `total_minutes_used` with `included_minutes`: quota='exhausted' if used >= included, else 'ok'; detail = '<used>/<included> minutes'.",
@@ -816,7 +816,7 @@ async function finishWithoutCi(ctx, why) {
     "Post ONE short comment on PR " + ctx.prUrl + " via the GitHub MCP server: 'CI was not run by the autonomous workflow: " + why + ". Gates, review panel and smoke passed at commit " + ctx.headSha + "; see the PR body.' Do not push, merge or modify code.",
     { label: "comment-ci-skipped", phase: "CI", model: "sonnet", effort: "low" }
   );
-  await cleanupWorktrees(ctx, "CI", "ci skipped");
+  try { await cleanupWorktrees(ctx, "CI", "ci skipped"); } catch (e) { log("cleanup before CI-skip return failed: " + e.message); }
   log("CI skipped (" + why + "). PR awaits Gate B: " + ctx.prUrl);
   return { prUrl: ctx.prUrl, branch: ctx.branch, headSha: ctx.headSha, issue: issueRef, ciSkipped: "quota" };
 }
@@ -1077,7 +1077,7 @@ const ship = requireAgentResult(await agent(
   "AUTONOMOUS single-feature run, SHIP phase (master-design-doc.md §5, D2). " +
     "Push the NON-MAIN branch '" +
     ctx.branch +
-    "' (at commit " + ctx.headSha + "; verify with git rev-parse before pushing) to origin (the pre-push hook + settings allow tier branches; main is forbidden). " +
+    "' (at commit " + ctx.headSha + "; verify with `git rev-parse " + ctx.branch + "` that the branch points at " + ctx.headSha + " before pushing) to origin (the pre-push hook + settings allow tier branches; main is forbidden). " +
     "Then open a PR from '" +
     ctx.branch +
     "' into '" +
@@ -1141,7 +1141,8 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
         "If the PR reports no checks at all (the repository has no CI configured), that counts as 'green' — " +
         "do not wait for checks that will never start. " +
         "On 'red', include the failing job names and a short excerpt of the failure logs. " +
-        "If a job failed before any step ran with an annotation about account payments, billing, or a spending limit (check `gh api repos/{owner}/{repo}/check-runs/{id}/annotations`), return status 'red', blocker 'billing', logsExcerpt = that annotation verbatim. Otherwise blocker 'none' for green/pending and 'code' for a red caused by the change.",
+        "If a job failed before any step ran with an annotation about account payments, billing, or a spending limit (check `gh api repos/{owner}/{repo}/check-runs/{id}/annotations`), return status 'red', blocker 'billing', logsExcerpt = that annotation verbatim. Otherwise blocker 'none' for green/pending and 'code' for a red caused by the change." +
+        " (poll " + poll + "/" + pollBudget + ", fix attempt " + fixAttempt + ")",
       {
         label: "poll-ci",
         phase: "CI",
@@ -1178,7 +1179,7 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
     ciGreen = true;
     prUrl = ctx.prUrl;
     log("CI is GREEN. PR ready for Gate B (human merge): " + prUrl);
-    await cleanupWorktrees(ctx, "CI", "ci green");
+    try { await cleanupWorktrees(ctx, "CI", "ci green"); } catch (e) { log("cleanup before CI-green return failed: " + e.message); }
     break;
   }
 
@@ -1204,8 +1205,9 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
       "re-validate the affected cases as a delta, then re-push the non-main branch. Do NOT touch main.\n" + HEAD_SHA_CLAUSE + "\nFailure context:\n" + ctx.failureContext,
     { label: "fix-ci-and-repush", phase: "CI", model: "sonnet", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
   ), "CI FIX");
-  if (isExternalBlocker(fix.blocker)) { ctx.failureContext = fix.blockerDetail || ("blocker=" + fix.blocker); await pauseForHuman("CI", fix.blocker, ctx); }
+  // Record worktreeBranch BEFORE the blocker check: pauseForHuman() cleans up worktrees immediately, and a blocked-but-committed fix's side branch must be registered first or cleanup never sees it (same order as reimplement() and the first-implement site).
   if (fix.worktreeBranch) ctx.worktreeBranches.push(fix.worktreeBranch);
+  if (isExternalBlocker(fix.blocker)) { ctx.failureContext = fix.blockerDetail || ("blocker=" + fix.blocker); await pauseForHuman("CI", fix.blocker, ctx); }
   await reconcileBranch(ctx, fix, "CI", 100 + fixAttempt);
   // Loop: the for-condition re-polls. Counter-controlled.
 }
