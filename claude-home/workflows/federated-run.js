@@ -1337,7 +1337,7 @@ const combinedReports = green
   .map((o) => "### Feature: " + o.feature.title + " (" + o.feature.id + ")\n\n" + o.dodReport)
   .join("\n\n---\n\n");
 
-const ship = requireAgentResult(await agent(
+const ship = await agent(
   "AUTONOMOUS federated run, SHIP phase (master-design-doc.md §7). Push the NON-MAIN dev branch '" +
     devBranch +
     "' (never push main — the pre-push hook + settings forbid it) and open exactly ONE dev->main pull request " +
@@ -1347,7 +1347,14 @@ const ship = requireAgentResult(await agent(
     "and blockerDetail; otherwise blocker='none'.\n\nAggregated DoD reports (PR body):\n" +
     combinedReports,
   { label: "push-and-open-pr", phase: "Ship", schema: SHIP_SCHEMA }
-), "SHIP");
+);
+if (!ship) {
+  // I4: requireAgentResult used to throw a plain Error here — route the
+  // BATCH ship's dead-agent case through batchCtx.fail like every other
+  // batch-level blocker (the per-feature sites are already covered by the
+  // fan-out wrapper).
+  await batchCtx.fail("Ship", "usage_limit", "Ship agent returned no result (usage limit or kill)");
+}
 
 batchCtx.prUrl = ship.prUrl;
 if (isExternalBlocker(ship.blocker) || !ship.pushed || !ship.prUrl) {
@@ -1444,12 +1451,18 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
   // here (runOwnsBranch(batchCtx) is false — devBranch is never "owned"), but
   // reconcile runs for real: it moves devBranch's ref to the fix's headSha.
   await detachWorktrees(batchCtx, "CI", 100 + fixAttempt, "before-implement");
-  const fix = requireAgentResult(await agent(
+  const fix = await agent(
     "AUTONOMOUS federated run, CI-RED fix (reference/definition-of-done.md CI-red delta) — fix attempt " + fixAttempt + ". " +
       "On the dev branch '" + devBranch + "' at " + (batchCtx.headSha || "the pushed tip") + ", read the failing CI logs via the GitHub MCP, fix the ROOT CAUSE (no shim, no weakened test, no skipped " +
       "check), re-validate the affected cases as a delta, then re-push the dev branch. Do NOT touch main.\n" + HEAD_SHA_CLAUSE + "\nFailure context:\n" + batchCtx.failureContext,
     { label: "fix-ci-and-repush", phase: "CI", model: "sonnet", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
-  ), "CI FIX");
+  );
+  if (!fix) {
+    // I4: requireAgentResult used to throw a plain Error here — route the
+    // BATCH CI fix's dead-agent case through batchCtx.fail like every other
+    // batch-level blocker.
+    await batchCtx.fail("CI", "usage_limit", "CI agent returned no result (usage limit or kill)");
+  }
   if (fix.worktreeBranch) batchCtx.worktreeBranches.push(fix.worktreeBranch);
   if (isExternalBlocker(fix.blocker)) await batchCtx.fail("CI", fix.blocker, fix.blockerDetail || ("blocker=" + fix.blocker));
   await reconcileBranch(batchCtx, fix, "CI", 100 + fixAttempt);

@@ -264,6 +264,15 @@ test("single: a dead mechanical agent pauses for a human instead of throwing raw
   assert.ok(run.labels.includes("pause-for-human"));
 });
 
+test("single: a null ship result pauses for a human with cleanup instead of throwing raw (I4)", async () => {
+  const scenario = { ...HAPPY, "push-and-open-pr": null, "pause-for-human": "posted" };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
+  const c = run.labels.indexOf("cleanup-worktrees");
+  const p = run.labels.indexOf("pause-for-human");
+  assert.ok(c > -1 && p > -1 && c < p, "cleanup runs before the pause comment: " + run.labels.join(", "));
+});
+
 test("single: gates helper runs in the run worktree at headSha with the pass number", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
   const g = run.prompts.find((p) => p.label === "gates");

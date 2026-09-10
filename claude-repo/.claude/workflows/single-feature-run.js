@@ -741,7 +741,7 @@ async function cleanupWorktrees(ctx, phaseName, tag) {
 async function reimplement(label, why, context, pass) {
   await detachWorktrees(ctx, "Implement", pass, "before-implement");
   const before = ctx.headSha;
-  const r = requireAgentResult(await agent(
+  const r = await agent(
     "AUTONOMOUS run, " + why + " (master-design-doc.md §5/§8) — pass " + pass + ". Fix the ROOT CAUSE — do NOT weaken tests, skip cases, or shim. " +
       "Fix in-scope bugs in this change (no-shed); file only genuinely orthogonal bugs as cross-linked GH issues.\n" +
       "ORDER OF WORK: every BLOCKING finding first, each fixed and committed; then every minor finding as its own commit. " +
@@ -751,7 +751,13 @@ async function reimplement(label, why, context, pass) {
       "BLOCKERS: for an external condition you cannot fix return blocker='credentials'|'infra'|'billing'|'ambiguity' with blockerDetail; otherwise blocker='none'.\n\n" +
       "Branch: " + ctx.branch + " at " + ctx.headSha + "\n" + context,
     { label, phase: "Implement", model: "sonnet", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
-  ), "IMPLEMENT");
+  );
+  if (!r) {
+    // I4: requireAgentResult used to throw a plain Error here — after the run
+    // owns a worktree, that skips cleanup. Route through pauseForHuman instead.
+    ctx.failureContext = "Implement agent returned no result (usage limit or kill)";
+    await pauseForHuman("Implement", "usage_limit", ctx);
+  }
   ctx.lastImplementSummary = r.summary || "";
   ctx.lastFilesTouched = r.filesTouched || [];
   // Record worktreeBranch BEFORE the blocker check: pauseForHuman() cleans up
@@ -1096,7 +1102,7 @@ if (!reviewed || !dodReport) {
 // PHASE 5 — SHIP. Push the non-main branch and open the dev->main PR.
 // ---------------------------------------------------------------------------
 phase("Ship");
-const ship = requireAgentResult(await agent(
+const ship = await agent(
   "AUTONOMOUS single-feature run, SHIP phase (master-design-doc.md §5, D2). " +
     "Push the NON-MAIN branch '" +
     ctx.branch +
@@ -1116,7 +1122,13 @@ const ship = requireAgentResult(await agent(
     model: "sonnet",
     schema: SHIP_SCHEMA,
   }
-), "SHIP");
+);
+if (!ship) {
+  // I4: requireAgentResult used to throw a plain Error here — after the run
+  // owns a worktree, that skips cleanup. Route through pauseForHuman instead.
+  ctx.failureContext = "Ship agent returned no result (usage limit or kill)";
+  await pauseForHuman("Ship", "usage_limit", ctx);
+}
 ctx.prUrl = ship.prUrl;
 if (isExternalBlocker(ship.blocker) || !ship.pushed || !ship.prUrl) {
   ctx.failureContext =
@@ -1222,12 +1234,18 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
   }
 
   await detachWorktrees(ctx, "CI", 100 + fixAttempt, "before-implement");
-  const fix = requireAgentResult(await agent(
+  const fix = await agent(
     "AUTONOMOUS run, CI-RED fix (master-design-doc.md §5; reference/definition-of-done.md CI-red delta) — fix attempt " + fixAttempt + ". " +
       "On branch '" + ctx.branch + "' at " + ctx.headSha + ", read the failing CI logs, fix the ROOT CAUSE (no shim, no weakened test, no skipped check), " +
       "re-validate the affected cases as a delta, then re-push the non-main branch. Do NOT touch main.\n" + HEAD_SHA_CLAUSE + "\nFailure context:\n" + ctx.failureContext,
     { label: "fix-ci-and-repush", phase: "CI", model: "sonnet", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
-  ), "CI FIX");
+  );
+  if (!fix) {
+    // I4: requireAgentResult used to throw a plain Error here — after the run
+    // owns a worktree, that skips cleanup. Route through pauseForHuman instead.
+    ctx.failureContext = "CI agent returned no result (usage limit or kill)";
+    await pauseForHuman("CI", "usage_limit", ctx);
+  }
   ctx.lastImplementSummary = fix.summary || "";
   ctx.lastFilesTouched = fix.filesTouched || [];
   // Record worktreeBranch BEFORE the blocker check: pauseForHuman() cleans up worktrees immediately, and a blocked-but-committed fix's side branch must be registered first or cleanup never sees it (same order as reimplement() and the first-implement site).
