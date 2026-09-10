@@ -454,7 +454,12 @@ async function runReviewPanel(runLabel, ctx, base, evidence, mode) {
       }
     }
   }
-  const rejected = valid.filter((r) => r.v.verdict === "reject" || (r.v.deferralVerdicts || []).some((d) => !d.accepted));
+  // A seat that says "pass" while its own ledger still holds a blocking,
+  // unaddressed finding is not actually passing — the ledger merge above just
+  // ran, so ctx.findings[r.agentType] already reflects this round's findings
+  // and resolutions.
+  const rejected = valid.filter((r) => r.v.verdict === "reject" || (r.v.deferralVerdicts || []).some((d) => !d.accepted) ||
+    Object.values(ctx.findings[r.agentType] || {}).some((f) => f.severity === "blocking" && f.status !== "addressed"));
   if (rejected.length === 0) {
     return { pass: true, verdictSection: valid.map((r) => r.v.verdictSection || ("## Reviewer Verdict\nPASS — " + r.agentType + ".")).join("\n\n") };
   }

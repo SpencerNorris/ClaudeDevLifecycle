@@ -401,6 +401,23 @@ test("single: a review reject triggers reimplement, then a DELTA review with tha
   assert.match(re.prompt, /no-shed/);
 });
 
+test("single: a seat that says 'pass' with a blocking finding in its own ledger is treated as a reject (I1)", async () => {
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0
+      ? { verdict: "pass", summary: "looks fine", findings: [{ id: "F1", severity: "blocking", category: "correctness", detail: "swallowed exception", location: "src/x.py:9" }] }
+      : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed", note: "fixed" }] }),
+    "reimplement-after-review": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const adv = run.prompts.filter((p) => p.label === "adversarial-reviewer");
+  assert.equal(adv.length, 2, "a self-contradicting 'pass' with an open blocking finding must still trigger a re-review");
+  const re = run.prompts.find((p) => p.label === "reimplement-after-review");
+  assert.ok(re, "reimplement-after-review never dispatched");
+  assert.match(re.prompt, /F1/, "critique names the finding id");
+  assert.equal(run.result.prUrl, R.ship.prUrl);
+});
+
 test("single: a smoke failure re-runs the failed cases and reviews the delta, not the full diff", async () => {
   const scenario = { ...HAPPY,
     "validate-and-dod": (p, o, n) => (n === 0
@@ -435,7 +452,10 @@ test("single: a reimplement that produces no new commit is a code failure, not a
 test("single: a reimplement that produces no new commit on the review path is a standing rejection, not a re-review", async () => {
   const reject = { verdict: "reject", summary: "bad", findings: [{ id: "F1", severity: "blocking", category: "correctness", detail: "no ON CONFLICT", location: "src/x.py:10" }] };
   const scenario = { ...HAPPY,
-    "adversarial-reviewer": (p, o, n) => (n === 0 ? reject : R.reviewPass),
+    // I1: a "pass" verdict must actually close the seat's own open finding
+    // (resolved) — the earlier mock left F1 open and relied on the pre-fix
+    // bug where a bare verdict:"pass" won regardless of the ledger.
+    "adversarial-reviewer": (p, o, n) => (n === 0 ? reject : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed", note: "fixed" }] }),
     "reimplement-after-review": (p, o, n) => (n === 0 ? R.implement /* same sha as before: nothing committed */ : { ...R.implement, headSha: SHA_B }),
   };
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
@@ -462,9 +482,13 @@ test("single: a deferral a seat rejects becomes a closable finding under its own
       if (n === 1) return { ...R.reviewPass, resolved: [{ id: "deferral-F9", status: "addressed", note: "fixed in-scope" }] };
       return R.reviewPass;
     },
-    "correctness-reviewer": (p, o, n) => (n === 1
-      ? { verdict: "reject", summary: "separate issue", findings: [{ id: "C1", severity: "blocking", category: "correctness", detail: "off-by-one", location: "src/y.py:5" }] }
-      : R.reviewPass),
+    // I1: round 2 (n===2) must actually resolve C1 for the panel to pass —
+    // the earlier mock left it open and relied on the pre-fix bug.
+    "correctness-reviewer": (p, o, n) => {
+      if (n === 1) return { verdict: "reject", summary: "separate issue", findings: [{ id: "C1", severity: "blocking", category: "correctness", detail: "off-by-one", location: "src/y.py:5" }] };
+      if (n === 2) return { ...R.reviewPass, resolved: [{ id: "C1", status: "addressed", note: "fixed off-by-one" }] };
+      return R.reviewPass;
+    },
     "reimplement-after-review": (p, o, n) => ({ ...R.implement, headSha: n === 0 ? SHA_B : SHA_C }),
   };
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
