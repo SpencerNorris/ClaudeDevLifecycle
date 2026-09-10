@@ -822,3 +822,42 @@ test("federated: a batch-level pause falls back to the PR URL, then a plain note
   assert.match(pause.prompt, /no batch issue given/, "falls back to the plain note when both issue and prUrl are absent");
   assert.doesNotMatch(pause.prompt, /Issue: main\b/, "the dev branch name must never be posted as the issue");
 });
+
+test("federated: M4 — a stray worktreeBranch report of devBranch is never offered to a feature's cleanup branch-delete step", async () => {
+  const scenario = { ...FED_HAPPY, [T + "implement"]: { ...R.implement, worktreeBranch: "main" } };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const cleanup = run.prompts.find((p) => p.label === T + "cleanup-worktrees");
+  assert.ok(cleanup, T + "cleanup-worktrees never dispatched: " + run.labels.join(", "));
+  assert.doesNotMatch(cleanup.prompt, /refs\/heads\/main\b/, "devBranch must never appear as a side branch to delete: " + cleanup.prompt);
+});
+
+test("federated: a dead per-feature cleanup agent during an escalation pauses that feature once — no second terminal comment", async () => {
+  const args2 = { devBranch: "main", features: [
+    { id: "f1", title: "dark mode", issue: "owner/repo#1", plan: "do it" },
+    { id: "f2", title: "light mode", issue: "owner/repo#2", plan: "do it" },
+  ] };
+  const T1 = "feat:f1:", T2 = "feat:f2:";
+  const scenario = { ...HAPPY,
+    [T1 + "design-review"]: R.design, [T1 + "detach-worktrees"]: R.detach, [T1 + "implement"]: R.implement, [T1 + "reconcile-branch"]: reconcileEcho,
+    [T1 + "pin-run-worktree"]: pinEcho, [T1 + "gates"]: R.gatesPass, [T1 + "adversarial-reviewer"]: R.reviewPass, [T1 + "correctness-reviewer"]: R.reviewPass,
+    [T1 + "validate-and-dod"]: R.dodPass, [T1 + "cleanup-worktrees"]: R.cleanup,
+    [T2 + "design-review"]: R.design, [T2 + "detach-worktrees"]: R.detach,
+    [T2 + "implement"]: { ...R.implement, branch: "feat/light-mode" },
+    [T2 + "reconcile-branch"]: { ok: false, sha: SHA_B, detail: "feat/light-mode is not an ancestor of " + SHA_B },
+    // The cleanup agent that the escalation path dispatches dies (usage limit).
+    [T2 + "cleanup-worktrees"]: null,
+    "root-cause:*": "root cause diagnosed",
+    "escalate:*": "posted",
+    "pause-feature-for-human:*": "posted",
+    "integrate": { merged: ["f1"], blocker: "none" },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.federated, args2, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const f2Cleanups = run.labels.filter((l) => l === T2 + "cleanup-worktrees");
+  assert.equal(f2Cleanups.length, 1, "the nested pause must not dispatch a second cleanup: " + run.labels.join(", "));
+  assert.ok(run.labels.includes("pause-feature-for-human:f2"), "the dead cleanup agent pauses f2: " + run.labels.join(", "));
+  assert.ok(!run.labels.includes("escalate:feat:f2"), "the pause already stands — no escalation comment on top of it: " + run.labels.join(", "));
+  assert.ok(!run.labels.includes("root-cause:feat:f2"), "no root-cause diagnosis after the pause: " + run.labels.join(", "));
+  assert.ok(run.labels.includes("integrate"), "the batch still integrates f1: " + run.labels.join(", "));
+});

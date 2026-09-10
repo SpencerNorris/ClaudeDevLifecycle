@@ -843,7 +843,12 @@ async function cleanupWorktrees(ctx, phaseName, tag) {
   if (ctx.cleaningUp) return { ok: true, removed: [] };
   ctx.cleaningUp = true;
   try {
-    const side = ctx.worktreeBranches.filter((b) => b && b !== ctx.branch);
+    // M4: exclude devBranch too — an implementer's self-reported
+    // worktreeBranch is free-form text the schema does not constrain, and
+    // devBranch is normally an ancestor of ctx.branch, so without this a
+    // stray report of devBranch here would pass the ancestor check below and
+    // could trigger `git branch -d` on the shared dev branch itself.
+    const side = ctx.worktreeBranches.filter((b) => b && b !== ctx.branch && b !== devBranch);
     const owned = ctx.ownedWorktrees.slice();
     const r = await mechanical(ctx, "cleanup-worktrees", phaseName,
       "(" + tag + ", head " + (ctx.headSha || "none") + ")\n" +
@@ -1084,7 +1089,16 @@ function makeFeatureCtx(feature) {
       // pauseFeatureForHuman cleans up internally — do not clean up twice.
       await pauseFeatureForHuman(feature, stage, kind, ctx);
     } else {
-      try { await cleanupWorktrees(ctx, stage, "feature escalation"); } catch (e) { log(tag + ": cleanup before feature escalation failed: " + e.message); }
+      try {
+        await cleanupWorktrees(ctx, stage, "feature escalation");
+      } catch (e) {
+        // A dead cleanup agent has already paused this feature (mechanical's
+        // null branch -> ctx.fail -> pauseFeatureForHuman posted the comment
+        // and threw FeatureStop). Let that terminal stand instead of posting
+        // a second one — the same rule escalate()/batchEscalate() follow (M6).
+        if (e instanceof FeatureStop) throw e;
+        log(tag + ": cleanup before feature escalation failed: " + e.message);
+      }
       await postEscalation(stage, attempts || K, ctx, tag);
     }
     throw new FeatureStop({ feature, branch: ctx.branch, escalated: true, reason: ctx.failureContext });
