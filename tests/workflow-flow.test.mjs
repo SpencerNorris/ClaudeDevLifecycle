@@ -154,7 +154,7 @@ export const HAPPY = {
 
 export const HAPPY_LABELS = [
   "design-review",
-  "detach-worktrees", "implement-tdd", "reconcile-branch", "pin-run-worktree",
+  "implement-tdd", "reconcile-branch", "pin-run-worktree",
   "gates",
   ["adversarial-reviewer", "correctness-reviewer"],
   "validate-and-dod",
@@ -184,10 +184,11 @@ test("cache-collision guard: a cacheable entry does not trip the collision check
   );
 });
 
-test("single: the first implement is preceded by detach and followed by reconcile and pin", async () => {
+test("single: the first implement is not preceded by a detach (no branch exists yet) and is followed by reconcile and pin", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
   const i = run.labels.indexOf("implement-tdd");
-  assert.equal(run.labels[i - 1], "detach-worktrees");
+  assert.ok(i > -1, "implement-tdd never dispatched: " + (run.error && run.error.message));
+  assert.ok(!run.labels.slice(0, i).includes("detach-worktrees"), "no detach before the first implement");
   assert.equal(run.labels[i + 1], "reconcile-branch");
   assert.equal(run.labels[i + 2], "pin-run-worktree");
   const pin = run.prompts.find((p) => p.label === "pin-run-worktree");

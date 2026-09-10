@@ -544,13 +544,9 @@ function runOwnsBranch(ctx) {
 }
 
 /** Detach every worktree that holds ctx.branch so the next implementer can
- * check it out; the detached paths become run-owned (spec D1, D6). Runs
- * unconditionally, including before the very first implement (ctx.branch is
- * still devBranch then): git refuses to check the same branch out in two
- * worktrees at once, so a pre-ownership call can only ever find the excluded
- * main working tree and no-ops safely — it is never asked to touch a
- * worktree checked out on devBranch other than that one. */
+ * check it out; the detached paths become run-owned (spec D1, D6). */
 async function detachWorktrees(ctx, phaseName, pass) {
+  if (!runOwnsBranch(ctx)) return { ok: true, detached: [] };
   const r = await mechanical(ctx, "detach-worktrees", phaseName,
     "(pass " + pass + ", head " + ctx.headSha + ")\n" +
       "1. `git worktree list --porcelain` — for every worktree whose `branch` line is `refs/heads/" + ctx.branch + "` " +
