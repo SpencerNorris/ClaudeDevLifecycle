@@ -652,6 +652,13 @@ async function pauseForHuman(stage, blocker, context) {
 // deterministic git/gh action is an agent with a fixed command list, low
 // effort, and a schema. Each prompt embeds the pass and the commit it acts
 // on, because the harness caches results by prompt (cache rule).
+//
+// I3: most of these commands are on the settings allow-list, so they never
+// prompt. Exception: the `git -C <worktree> …` forms detachWorktrees and
+// pinRunWorktree run cannot be allow-listed narrowly (a Bash rule matches
+// the whole command text, and a wildcard before the subcommand would also
+// approve injected -c/--exec-path options) — those run under the session's
+// permission mode instead (see docs/specs/2026-09-09-workflow-resequencing-design.md D7).
 // ---------------------------------------------------------------------------
 const MECHANICAL_PREAMBLE =
   "MECHANICAL STEP — run exactly the commands below, in order. Do not improvise, do not fix anything, " +
@@ -752,7 +759,12 @@ async function pinRunWorktree(ctx, phaseName, pass) {
     "(pass " + pass + ")\n" +
       "1. If `" + path + "` exists and is a worktree (`git worktree list --porcelain` lists it): `git -C " + path + " status --porcelain --untracked-files=no`; if non-empty return ok=false with the output as detail; else `git -C " + path + " checkout --detach " + ctx.headSha + "`.\n" +
       "2. Otherwise: `git worktree add --detach " + path + " " + ctx.headSha + "`.\n" +
-      "3. `git -C " + path + " rev-parse HEAD` must print `" + ctx.headSha + "`. Return ok=true, path=the absolute path of " + path + ", sha=that value.",
+      // I3: verify via `git worktree list --porcelain` (covered by the
+      // Bash(git worktree:*) allow rule) instead of `git -C <path> rev-parse
+      // HEAD` — a `git -C <path> ...` form cannot be allow-listed narrowly
+      // (Bash rules match the whole command text; a wildcard before the
+      // subcommand would also approve injected -c/--exec-path options).
+      "3. `git worktree list --porcelain`; find the entry whose `worktree` line is the absolute path of `" + path + "`, and confirm its `HEAD` line is `HEAD " + ctx.headSha + "`. Return ok=true, path=that absolute path, sha=that HEAD value.",
     PIN_SCHEMA);
   if (!r.ok) {
     ctx.failureContext = "Could not pin the run worktree at " + ctx.headSha + ": " + (r.detail || "");
