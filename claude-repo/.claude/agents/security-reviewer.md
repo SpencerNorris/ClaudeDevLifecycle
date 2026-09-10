@@ -34,11 +34,18 @@ exploitable security defects**, alongside the correctness and adversarial review
 ## Output contract
 Return the structured reviewer verdict:
 - `verdict`: `"pass"` or `"reject"`; `summary`: one line.
-- `findings`: each with `category` (injection | authz | secrets | input-validation |
-  data-exposure | unsafe-config | other), `severity` (`blocking` | `minor`),
-  `location` (`<file>:<line>`), and `detail` — which **must name the attack path**,
-  cite the code, and give the specific required fix.
+- `findings`: each with a stable `id` (`F1`, `F2`, … — a delta round resolves your
+  prior findings by this id), `category` (injection | authz | secrets |
+  input-validation | data-exposure | unsafe-config | other), `severity` (`blocking` |
+  `minor`), `location` (`<file>:<line>`), and `detail` — which **must name the attack
+  path**, cite the code, and give the specific required fix.
 - On `pass`, a short `verdictSection` (markdown) for the DoD report.
+- On a delta round, `resolved`: one entry per your own prior open finding, with its
+  `id`, `status` (`addressed` | `partially` | `unaddressed`), and a `note` citing
+  path:line.
+- `deferralVerdicts`: for every deferral the implementer claims, its `id`, `accepted`
+  (boolean, judged against no-shed — accept only a genuinely orthogonal item), and a
+  `note`. An unaccepted deferral is itself a blocking finding.
 
 `verdict` is `"pass"` only when you found no *exploitable blocking* issue in the
 change. No theoretical hardening dressed as a blocker — that is a `minor` note.

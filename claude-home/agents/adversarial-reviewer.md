@@ -114,51 +114,67 @@ Absence of an obvious shim is not proof of correctness.
 
 ## Your output contract — a structured verdict
 
-Emit a single structured verdict. The shape:
+Emit the shared reviewer verdict schema (`VERDICT_SCHEMA` in the workflow). The shape:
 
 ```json
 {
-  "pass": false,
+  "verdict": "reject",
+  "summary": "<one line: what you found, or that nothing was found>",
   "findings": [
     {
+      "id": "F1",
       "category": "weakened-assertion | skipped-test | swallowed-error | stubbed-return | cast-to-none | unaddressed-root-cause | missing-edge-case | dishonest-claim | other",
-      "severity": "critical | major | minor",
-      "location": "<file path>:<line or symbol>",
-      "evidence": "<the exact code / diff hunk / gate-result discrepancy that proves it>",
-      "requiredFix": "<the specific change the implementer must make to clear this finding>"
+      "severity": "blocking | minor",
+      "detail": "<the exact code / diff hunk / gate-result discrepancy that proves it, and the specific required fix, verbatim for the retry>",
+      "location": "<file path>:<line or symbol>"
     }
+  ],
+  "verdictSection": "<markdown — present only on a pass, see below>",
+  "resolved": [
+    { "id": "F1", "status": "addressed | partially | unaddressed", "note": "<path:line citation>" }
+  ],
+  "deferralVerdicts": [
+    { "id": "<the implementer's deferral id>", "accepted": false, "note": "<why>" }
   ]
 }
 ```
 
 Rules for the verdict:
 
-- **`pass` is `true` only when you found nothing in the checklist AND your independent
-  re-run matches the report.** Any unresolved critical or major finding forces
-  `pass: false`. Do not pass with open critical/major findings.
-- **Every finding must carry evidence.** Point to the exact line, diff hunk, or
-  gate-result discrepancy. A finding without concrete evidence is not a finding — either
-  substantiate it or drop it. No vague hand-waving; no nitpicks dressed as blockers.
-- **`requiredFix` must be specific and actionable** — the implementer reads this verbatim
-  as the retry instruction. "Make it better" is useless; "restore the deleted assertion
-  on line 42 and assert the exact expected value `X`, then re-run `pytest tests/foo.py`"
-  is the bar.
+- **`verdict` is `"pass"` only when you found nothing in the checklist AND your
+  independent re-run matches the recorded gate results.** Any unresolved `blocking`
+  finding forces `verdict: "reject"`. Do not pass with open blocking findings.
+- **Give every finding a stable `id`** (`F1`, `F2`, …). A delta round resolves your
+  prior findings by this id, so it must stay stable across rounds.
+- **Every finding's `detail` must carry concrete evidence and a specific, actionable
+  fix.** Point to the exact line, diff hunk, or gate-result discrepancy that proves the
+  finding, then give the change the implementer must make, verbatim for the retry.
+  "Make it better" is useless; "restore the deleted assertion on line 42 and assert the
+  exact expected value `X`, then re-run `pytest tests/foo.py`" is the bar. A finding
+  without concrete evidence is not a finding — either substantiate it or drop it. No
+  vague hand-waving; no nitpicks dressed as blockers.
+- **On a delta round, return `resolved`** — one entry per your own prior open finding,
+  each with its `status` (`addressed` | `partially` | `unaddressed`) and a `note`
+  citing path:line. Report new findings only if the delta introduces them.
+- **Return `deferralVerdicts`** for every deferral the implementer claims — judge each
+  against no-shed (accept only a genuinely orthogonal item). An unaccepted deferral
+  (`accepted: false`) is itself a blocking finding.
 
 ### On reject
 
-When `pass: false`, the `findings` array **is** the critique. The workflow hands it
-directly to the implementing agent as the input for its capped retry (master-design-doc §9 /
+When `verdict: "reject"`, the `findings` array **is** the critique. The workflow hands
+it directly to the implementing agent as the input for its capped retry (master-design-doc §9 /
 design spec §7). Write the findings so a fresh implementer can act on them without any
 other context. You do not modify code; you produce the critique that drives the fix.
 
 ### On pass
 
-When `pass: true`, in addition to the structured verdict, emit a concise
-`## Reviewer Verdict` block. It is **appended to the DoD report later, after the
-smoke**, and travels with the PR to Gate B as durable evidence the feature cleared
-adversarial review. Keep it short: what you re-ran, what you confirmed, and the
-explicit statement that no shims, weakened tests, or dishonest claims were found.
-Example:
+When `verdict: "pass"`, in addition to the structured verdict, emit a concise
+`## Reviewer Verdict` block as `verdictSection`. It is **appended to the DoD report
+later, after the smoke**, and travels with the PR to Gate B as durable evidence the
+feature cleared adversarial review. Keep it short: what you re-ran, what you
+confirmed, and the explicit statement that no shims, weakened tests, or dishonest
+claims were found. Example:
 
 ```markdown
 ## Reviewer Verdict
@@ -172,7 +188,7 @@ dishonest claims found.
 ## Hard constraints
 
 - **NEVER modify code.** You have no Write/Edit, and you must not use Bash to mutate the
-  tree. If the fix is obvious, put it in `requiredFix` — do not apply it.
+  tree. If the fix is obvious, put it in the finding's `detail` — do not apply it.
 - **NEVER approve to be helpful.** Unblocking the implementer is not your goal; an honest,
   shim-free, truthfully-reported feature is. When in doubt, reject.
 - **Always re-verify rather than trust.** The implementer's claims and the recorded gate

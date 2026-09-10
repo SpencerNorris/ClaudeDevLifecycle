@@ -33,12 +33,19 @@ alongside the correctness and adversarial reviewers.
 ## Output contract
 Return the structured reviewer verdict:
 - `verdict`: `"pass"` or `"reject"`; `summary`: one line.
-- `findings`: each with `category` (superlinear | n-plus-1 | unbounded-growth |
+- `findings`: each with a stable `id` (`F1`, `F2`, … — a delta round resolves your
+  prior findings by this id), `category` (superlinear | n-plus-1 | unbounded-growth |
   redundant-work | resource-leak | other), `severity` (`blocking` | `minor`),
   `location` (`<file>:<line>`), and `detail` — which **must name the input
   scale/shape** where it bites, cite the code with the cost reasoning, and give the
   specific required fix.
 - On `pass`, a short `verdictSection` (markdown) for the DoD report.
+- On a delta round, `resolved`: one entry per your own prior open finding, with its
+  `id`, `status` (`addressed` | `partially` | `unaddressed`), and a `note` citing
+  path:line.
+- `deferralVerdicts`: for every deferral the implementer claims, its `id`, `accepted`
+  (boolean, judged against no-shed — accept only a genuinely orthogonal item), and a
+  `note`. An unaccepted deferral is itself a blocking finding.
 
 `verdict` is `"pass"` only when you found no performance defect that bites at
 realistic scale. Micro-optimization nitpicks are `minor` notes, never blockers.
