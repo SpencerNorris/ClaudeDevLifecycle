@@ -174,10 +174,10 @@ Every "done" report follows this structure:
 | id | name | pass | carried | detail | files |
 |---|---|---|---|---|---|
 | AC1 | <case name> | true/false | false | <one-line result> | <source files this case exercises> |
-| E1 | <derived edge case> | true/false | true | carried from pass <N> | <files> |
+| E1 | <derived edge case> | true/false | true | carried from `<sha>` | <files> |
 
 **Carried forward (not re-run this pass):**
-- <case id> — carried from pass <N>
+- <case id> — carried from `<sha>`
 
 ## Docs updated
 - <files>
