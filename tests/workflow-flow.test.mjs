@@ -266,12 +266,64 @@ test("single: DoD schema requires per-case results with a carried flag", async (
   assert.equal(v.opts.schema.properties.cases.items.properties.carried.type, "boolean");
 });
 
-test("single: happy path label order", { todo: "Task 7" }, async () => {
+test("single: happy path label order", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
   assert.equal(run.error, null, run.error && run.error.stack);
   assertSequence(run.labels, HAPPY_LABELS);
   assert.equal(run.result.prUrl, R.ship.prUrl);
   assert.equal(run.result.headSha, SHA_A);
+});
+
+test("single: an exhausted quota skips CI, cleans up, and finishes with ciSkipped", async () => {
+  const scenario = { ...HAPPY, "quota-check": { quota: "exhausted", detail: "2000/2000 minutes" }, "comment-ci-skipped": "posted" };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.ok(!run.labels.includes("poll-ci"));
+  assert.equal(run.result.ciSkipped, "quota");
+  assert.equal(run.labels[run.labels.length - 1], "cleanup-worktrees");
+});
+
+test("single: a billing-red poll takes the skip path instead of pausing", async () => {
+  const scenario = { ...HAPPY,
+    "quota-check": { quota: "unknown", detail: "no user scope" },
+    "poll-ci": { status: "red", blocker: "billing", logsExcerpt: "The job was not started because recent account payments have failed or your spending limit needs to be increased." },
+    "comment-ci-skipped": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.equal(run.result.ciSkipped, "quota");
+  assert.ok(!run.labels.includes("pause-for-human"));
+});
+
+test("single: a red CI fix is reconciled and pinned like any implement, and the run cleans up on green", async () => {
+  const scenario = { ...HAPPY,
+    "poll-ci": (p, o, n) => (n === 0 ? { status: "red", blocker: "code", failingJobs: ["unit"], logsExcerpt: "1 failed" } : R.ciGreen),
+    "fix-ci-and-repush": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const f = run.labels.indexOf("fix-ci-and-repush");
+  const r = run.labels.indexOf("reconcile-branch", f);
+  // reconcileBranch's own detach (spec D1/D6, "as built") unconditionally
+  // dispatches a "detach-worktrees" mechanical step ahead of its own
+  // "reconcile-branch" step whenever the run owns a real feature branch —
+  // exactly the same pattern reimplement() uses for every retry loop. So the
+  // fix is reconciled with nothing else (no gates/review/smoke) in between:
+  // only that detach may sit between the fix agent and its reconciliation.
+  assert.ok(r > f, "reconcile-branch follows fix-ci-and-repush");
+  assert.ok(run.labels.slice(f + 1, r).every((l) => l === "detach-worktrees"), "only reconcileBranch's own detach may sit between the fix and its reconciliation: " + run.labels.slice(f + 1, r).join(", "));
+  assert.equal(run.result.headSha, SHA_B);
+  assert.equal(run.labels[run.labels.length - 1], "cleanup-worktrees");
+});
+
+test("single: ship and CI prompts name the commit; the PR body is scrubbed after ship", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  const ship = run.prompts.find((p) => p.label === "push-and-open-pr");
+  assert.match(ship.prompt, new RegExp(SHA_A));
+  const i = run.labels.indexOf("push-and-open-pr");
+  assert.equal(run.labels[i + 1], "scrub-pr-body");
+  assert.match(run.prompts.find((p) => p.label === "scrub-pr-body").prompt, /Claude-Session/);
+  assert.match(run.prompts.find((p) => p.label === "poll-ci").prompt, new RegExp(SHA_A));
 });
 
 test("single: a gate failure goes back to implement without a smoke or a review", async () => {

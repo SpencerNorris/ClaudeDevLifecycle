@@ -786,6 +786,41 @@ async function runValidate(ctx, pass) {
   );
 }
 
+const SCRUB_SCHEMA = { type: "object", additionalProperties: false, required: ["ok", "changed"], properties: { ok: { type: "boolean" }, changed: { type: "boolean" }, detail: { type: "string" } } };
+const QUOTA_SCHEMA = { type: "object", additionalProperties: false, required: ["quota", "detail"], properties: { quota: { type: "string", enum: ["ok", "exhausted", "unknown"] }, detail: { type: "string" } } };
+
+/** Remove private session links from the PR body (spec D7): the outcome must
+ * not depend on whether the ship agent obeyed its prompt. */
+async function scrubPrBody(ctx) {
+  return mechanical(ctx, "scrub-pr-body", "Ship",
+    "(PR " + ctx.prUrl + ", head " + ctx.headSha + ")\n" +
+      "1. `gh pr view " + ctx.prUrl + " --json body --jq .body` and save it to a temporary file.\n" +
+      "2. If the body contains a line with `Claude-Session:` or the text `claude.ai/code/session_`, delete every such line and every line that consists only of such a link, then `gh pr edit " + ctx.prUrl + " --body-file <the file>` and return ok=true, changed=true.\n" +
+      "3. Otherwise return ok=true, changed=false.",
+    SCRUB_SCHEMA);
+}
+
+/** Read the account's Actions quota (spec D8). `unknown` without the `user`
+ * scope; polling then decides from the run's own billing annotation. */
+async function checkQuota(ctx) {
+  return mechanical(ctx, "quota-check", "CI",
+    "(PR " + ctx.prUrl + ")\n" +
+      "1. `login=$(gh api user --jq .login)`; then `gh api /users/$login/settings/billing/actions`.\n" +
+      "2. If the call fails (404 or a scope error), return quota='unknown' with the error text as detail.\n" +
+      "3. Otherwise compare `total_minutes_used` with `included_minutes`: quota='exhausted' if used >= included, else 'ok'; detail = '<used>/<included> minutes'.",
+    QUOTA_SCHEMA);
+}
+
+async function finishWithoutCi(ctx, why) {
+  await agent(
+    "Post ONE short comment on PR " + ctx.prUrl + " via the GitHub MCP server: 'CI was not run by the autonomous workflow: " + why + ". Gates, review panel and smoke passed at commit " + ctx.headSha + "; see the PR body.' Do not push, merge or modify code.",
+    { label: "comment-ci-skipped", phase: "CI", model: "sonnet", effort: "low" }
+  );
+  await cleanupWorktrees(ctx, "CI", "ci skipped");
+  log("CI skipped (" + why + "). PR awaits Gate B: " + ctx.prUrl);
+  return { prUrl: ctx.prUrl, branch: ctx.branch, headSha: ctx.headSha, issue: issueRef, ciSkipped: "quota" };
+}
+
 // ===========================================================================
 // MAIN FLOW
 // ===========================================================================
@@ -1042,7 +1077,7 @@ const ship = requireAgentResult(await agent(
   "AUTONOMOUS single-feature run, SHIP phase (master-design-doc.md §5, D2). " +
     "Push the NON-MAIN branch '" +
     ctx.branch +
-    "' to origin (the pre-push hook + settings allow tier branches; main is forbidden). " +
+    "' (at commit " + ctx.headSha + "; verify with git rev-parse before pushing) to origin (the pre-push hook + settings allow tier branches; main is forbidden). " +
     "Then open a PR from '" +
     ctx.branch +
     "' into '" +
@@ -1067,6 +1102,7 @@ if (isExternalBlocker(ship.blocker) || !ship.pushed || !ship.prUrl) {
   await pauseForHuman("Ship", isExternalBlocker(ship.blocker) ? ship.blocker : "infra", ctx);
 }
 log("Branch pushed and PR opened: " + ctx.prUrl);
+await scrubPrBody(ctx);
 
 // ---------------------------------------------------------------------------
 // PHASE 6 — CI. Poll GitHub Actions; on red, fix + re-push, capped at K.
@@ -1080,6 +1116,9 @@ log("Branch pushed and PR opened: " + ctx.prUrl);
 phase("CI");
 let prUrl = null;
 let ciGreen = false;
+
+const quota = await checkQuota(ctx);
+if (quota.quota === "exhausted") return await finishWithoutCi(ctx, "the GitHub Actions quota is exhausted (" + quota.detail + ")");
 
 for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
   log("CI fix attempt window " + fixAttempt + " of " + K + ". Polling GitHub Actions.");
@@ -1096,7 +1135,8 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
         ctx.prUrl +
         " (branch '" +
         ctx.branch +
-        "') via the GitHub MCP server. " +
+        "')" + " at commit " + ctx.headSha +
+        " via the GitHub MCP server. " +
         "Return status 'green' if all required checks passed, 'red' if a required check failed, 'pending' if still running. " +
         "If the PR reports no checks at all (the repository has no CI configured), that counts as 'green' — " +
         "do not wait for checks that will never start. " +
@@ -1125,10 +1165,8 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
     ctx.failureContext = "CI poll agent died without returning a status (usage-limit or harness interruption).";
     await pauseForHuman("CI", "usage_limit", ctx);
   }
-  if (isExternalBlocker(ci.blocker)) {
-    ctx.failureContext = ci.blockerDetail || ci.logsExcerpt || ("blocker=" + ci.blocker);
-    await pauseForHuman("CI", ci.blocker, ctx);
-  }
+  if (ci.blocker === "billing") return await finishWithoutCi(ctx, "GitHub reported a billing/quota refusal: " + (ci.logsExcerpt || ci.blockerDetail || "").slice(0, 200));
+  if (isExternalBlocker(ci.blocker)) { ctx.failureContext = ci.blockerDetail || ci.logsExcerpt || ("blocker=" + ci.blocker); await pauseForHuman("CI", ci.blocker, ctx); }
 
   if (!ci || !terminal) {
     ctx.failureContext =
@@ -1140,6 +1178,7 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
     ciGreen = true;
     prUrl = ctx.prUrl;
     log("CI is GREEN. PR ready for Gate B (human merge): " + prUrl);
+    await cleanupWorktrees(ctx, "CI", "ci green");
     break;
   }
 
@@ -1158,21 +1197,16 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
     await escalate("CI", fixAttempt, ctx);
   }
 
-  await agent(
-    "AUTONOMOUS run, CI-RED fix (master-design-doc.md §5; reference/definition-of-done.md CI-red delta). " +
-      "On branch '" +
-      ctx.branch +
-      "', read the failing CI logs, fix the ROOT CAUSE (no shim, no weakened test, no skipped check), " +
-      "re-validate the affected cases as a delta (act + the affected smoke cases), then re-push the non-main branch. " +
-      "Do NOT touch main.\n\nFailure context:\n" +
-      ctx.failureContext,
-    {
-      label: "fix-ci-and-repush",
-      phase: "CI",
-      model: "sonnet",
-      isolation: "worktree",
-    }
-  );
+  await detachWorktrees(ctx, "CI", 100 + fixAttempt, "before-implement");
+  const fix = requireAgentResult(await agent(
+    "AUTONOMOUS run, CI-RED fix (master-design-doc.md §5; reference/definition-of-done.md CI-red delta) — fix attempt " + fixAttempt + ". " +
+      "On branch '" + ctx.branch + "' at " + ctx.headSha + ", read the failing CI logs, fix the ROOT CAUSE (no shim, no weakened test, no skipped check), " +
+      "re-validate the affected cases as a delta, then re-push the non-main branch. Do NOT touch main.\n" + HEAD_SHA_CLAUSE + "\nFailure context:\n" + ctx.failureContext,
+    { label: "fix-ci-and-repush", phase: "CI", model: "sonnet", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
+  ), "CI FIX");
+  if (isExternalBlocker(fix.blocker)) { ctx.failureContext = fix.blockerDetail || ("blocker=" + fix.blocker); await pauseForHuman("CI", fix.blocker, ctx); }
+  if (fix.worktreeBranch) ctx.worktreeBranches.push(fix.worktreeBranch);
+  await reconcileBranch(ctx, fix, "CI", 100 + fixAttempt);
   // Loop: the for-condition re-polls. Counter-controlled.
 }
 
@@ -1188,4 +1222,4 @@ log(
 );
 
 // The workflow's success value: the green PR URL for the human's Gate-B merge.
-return { prUrl: prUrl, branch: ctx.branch, issue: issueRef };
+return { prUrl: prUrl, branch: ctx.branch, headSha: ctx.headSha, issue: issueRef };
