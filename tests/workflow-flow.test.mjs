@@ -480,3 +480,59 @@ test("cache-collision guard: a genuine repeated (label, prompt) throws unless ca
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// federated-run.js (Task 10): the re-sequenced core (design -> implement ->
+// detach/reconcile/pin -> gates -> review -> validate) ported per-feature,
+// with labels prefixed "feat:<id>:" so concurrent features never collide.
+// ---------------------------------------------------------------------------
+
+const FED_ARGS = { devBranch: "main", features: [{ id: "f1", title: "dark mode", issue: "owner/repo#1", plan: "do it" }] };
+const T = "feat:f1:";
+const FED_HAPPY = { ...HAPPY,
+  [T + "design-review"]: R.design, [T + "detach-worktrees"]: R.detach, [T + "implement"]: R.implement, [T + "reconcile-branch"]: reconcileEcho,
+  [T + "pin-run-worktree"]: pinEcho, [T + "gates"]: R.gatesPass, [T + "adversarial-reviewer"]: R.reviewPass, [T + "correctness-reviewer"]: R.reviewPass,
+  [T + "validate-and-dod"]: R.dodPass, [T + "cleanup-worktrees"]: R.cleanup,
+  "integrate": { merged: ["f1"], blocker: "none" },
+};
+
+test("federated: each feature core runs design, implement, reconcile, pin, gates, review, smoke in that order", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, FED_HAPPY);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const f = run.labels.filter((l) => l.startsWith(T));
+  assertSequence(f.slice(0, 9), [T + "design-review", T + "implement", T + "detach-worktrees", T + "reconcile-branch", T + "pin-run-worktree", T + "gates", [T + "adversarial-reviewer", T + "correctness-reviewer"], T + "validate-and-dod"]);
+});
+
+test("federated: a feature whose reconcile fails is excluded and the batch continues", async () => {
+  const args2 = { devBranch: "main", features: [
+    { id: "f1", title: "dark mode", issue: "owner/repo#1", plan: "do it" },
+    { id: "f2", title: "light mode", issue: "owner/repo#2", plan: "do it" },
+  ] };
+  const T1 = "feat:f1:", T2 = "feat:f2:";
+  const scenario = { ...HAPPY,
+    [T1 + "design-review"]: R.design, [T1 + "detach-worktrees"]: R.detach, [T1 + "implement"]: R.implement, [T1 + "reconcile-branch"]: reconcileEcho,
+    [T1 + "pin-run-worktree"]: pinEcho, [T1 + "gates"]: R.gatesPass, [T1 + "adversarial-reviewer"]: R.reviewPass, [T1 + "correctness-reviewer"]: R.reviewPass,
+    [T1 + "validate-and-dod"]: R.dodPass, [T1 + "cleanup-worktrees"]: R.cleanup,
+    [T2 + "design-review"]: R.design, [T2 + "detach-worktrees"]: R.detach,
+    [T2 + "implement"]: { ...R.implement, branch: "feat/light-mode" },
+    [T2 + "reconcile-branch"]: { ok: false, sha: SHA_B, detail: "feat/light-mode is not an ancestor of " + SHA_B },
+    [T2 + "cleanup-worktrees"]: R.cleanup,
+    "root-cause:*": "root cause diagnosed",
+    "escalate:*": "posted",
+    "pause-feature-for-human:*": "posted",
+    "integrate": { merged: ["f1"], blocker: "none" },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.federated, args2, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const cleanupF2 = run.prompts.find((p) => p.label === T2 + "cleanup-worktrees");
+  assert.ok(cleanupF2, "feat:f2:cleanup-worktrees never dispatched: " + run.labels.join(", "));
+  assert.match(cleanupF2.prompt, /feature escalation/);
+  assert.ok(
+    run.labels.some((l) => l === "escalate:feat:f2" || l === "pause-feature-for-human:f2"),
+    "expected an escalate:*/pause-feature-for-human:f2-style label for f2: " + run.labels.join(", ")
+  );
+  assert.ok(!run.labels.includes("escalate:feat:f1"), "f1 must not be escalated");
+  assert.ok(!run.labels.includes("pause-feature-for-human:f1"), "f1 must not be paused");
+  assert.ok(run.labels.includes(T1 + "validate-and-dod"), "f1 should reach validate-and-dod: " + run.labels.join(", "));
+  assert.ok(run.labels.includes("integrate"), "the batch should still integrate f1: " + run.labels.join(", "));
+});
