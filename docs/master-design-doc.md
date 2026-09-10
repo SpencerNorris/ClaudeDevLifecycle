@@ -349,21 +349,17 @@ caps + escalation live in the workflow code.
 flowchart TD
     GA{{"Gate A: authorize federated run<br/>feature list · budget · dev branch"}} --> SPAWN["Workflow spawns N<br/>worktree-isolated agents"]
 
-    SPAWN --> FA["feat A<br/>TDD · validate · DoD"]
-    SPAWN --> FB["feat B<br/>TDD · validate · DoD"]
-    SPAWN --> FC["feat C … ×N<br/>TDD · validate · DoD"]
+    SPAWN --> FA["feat A core<br/>design · TDD · gates · review · smoke · DoD"]
+    SPAWN --> FB["feat B core<br/>design · TDD · gates · review · smoke · DoD"]
+    SPAWN --> FC["feat C … ×N core<br/>design · TDD · gates · review · smoke · DoD"]
 
-    FA --> RA[["review panel"]]
-    FB --> RB[["review panel"]]
-    FC --> RC[["review panel"]]
+    FA -->|"review reject + critique (cap K)"| FA
+    FB -->|"review reject + critique (cap K)"| FB
+    FC -->|"review reject + critique (cap K)"| FC
 
-    RA -->|"reject + critique (cap K)"| FA
-    RB -->|"reject + critique (cap K)"| FB
-    RC -->|"reject + critique (cap K)"| FC
-
-    RA -->|pass| MG["Merge each reviewed-green<br/>feature → dev branch"]
-    RB -->|pass| MG
-    RC -->|pass| MG
+    FA -->|"review pass"| MG["Merge each reviewed-green<br/>feature → dev branch"]
+    FB -->|"review pass"| MG
+    FC -->|"review pass"| MG
 
     MG --> PUSH["Push dev · open ONE<br/>dev→main PR (all DoD reports)"]
     PUSH --> CI["GitHub Actions runs"]
@@ -375,13 +371,11 @@ flowchart TD
 
     classDef gate fill:#fff3e0,stroke:#f57c00,color:#000
     classDef claudeAction fill:#f3e5f5,stroke:#7b1fa2,color:#000
-    classDef agent fill:#d0f0ed,stroke:#00897b,color:#000
     classDef decision fill:#fff3e0,stroke:#f57c00,color:#000
     classDef terminal fill:#e1f5ff,stroke:#0288d1,color:#000
 
     class GA,GB gate
     class SPAWN,FA,FB,FC,MG,PUSH,CI,FIX claudeAction
-    class RA,RB,RC agent
     class CG decision
     class DONE terminal
 ```
@@ -389,10 +383,14 @@ flowchart TD
 **Reading notes**
 
 - D4 **nests** D3 (it is one "Work" iteration) and contains N **cores** of D2
-  (implement → validate → DoD → review) run concurrently — not N full D2s. The
-  push / PR / CI / Gate-B tail happens **once** for the whole batch.
-- The review panel gates **each feature** before it merges onto dev, so a
-  shimmed feature never reaches the shared branch.
+  (design → implement → gates → review → smoke → DoD) run concurrently — not N
+  full D2s. The push / PR / CI / Gate-B tail happens **once** for the whole batch.
+- Each feature runs its **own** design review and spends its **own** two
+  independent K=3 budgets (validate failures, review rejects) — a feature that
+  spent attempts getting gates green still gets a full review-reject budget.
+- The review panel is **part of each feature's own core**, not a downstream
+  stage: it gates that feature before it merges onto dev, so a shimmed
+  feature never reaches the shared branch.
 - Two human touchpoints for the whole batch: **Gate A** (authorize) and **Gate
   B** (merge). Escalation only fires when a cap is exhausted.
 
@@ -557,14 +555,15 @@ split: `reference/` loads on-demand (see §1).**
 |---|---|---|
 | Task definition | Listens, asks clarifying questions if scope ambiguous | States task (Gate A: authorizes scope, budget, branch) |
 | Planning (non-trivial) | Drafts plan in plan mode | Approves plan (or pre-authorizes at Gate A) |
+| Design review | Reads issue, plan and the repo's stated contracts; returns constraints (Opus), before implementation | — |
 | Branching | Creates `dev/`, `feat/`, `fix/`, `chore/` branch | — |
 | Implementation | TDD: write test → implement → green → refactor | — |
 | Bug handling | Default: fix in-PR. Orthogonal: file GH issue + cross-link | Redirects if defer needed |
 | Test validation | Runs unit, integration, regression, lint, type | — |
 | Local CI pre-check | Optionally runs `act` | — |
+| Review panel | Reviewer agents (adversarial + correctness; security/perf opt-in) invoked with fixed inputs, before the smoke (autonomous) | Reviews PR at Gate B, e.g. `/code-review` (interactive) |
 | Smoke test | Playwright / curl / CLI exercise + named edges + failure modes | — |
 | DoD report | Writes report with required transcript | — (autonomous) or reviews (interactive) |
-| Review panel | Reviewer agents (adversarial + correctness; security/perf opt-in) invoked with fixed inputs (autonomous) | Reviews PR at Gate B, e.g. `/code-review` (interactive) |
 | Push | Pushes non-`main` branch | — |
 | PR open | Opens via GitHub MCP | — |
 | CI monitoring | Reads logs via MCP, commits fixes (capped at K) | — |
@@ -580,7 +579,7 @@ Where each rule fires in the control flow:
 
 | Rule | Enforced at | Mechanism |
 |---|---|---|
-| `definition-of-done.md` | DoD report (D2) + adversarial reviewer (autonomous) + Gate B (interactive) | Report structure required; the adversarial reviewer verifies honesty; user verifies at merge |
+| `definition-of-done.md` | DoD report (D2) + review panel before the smoke (autonomous) | The panel verifies the implementer's claims against the diff and the gate results before the smoke runs; the DoD report is judged at Gate B |
 | `no-shed.md` | Bug-discovered decision (D2) + adversarial reviewer's checklist | Default-fix; orthogonal exception requires GH issue; the adversarial reviewer catches shims |
 | `branch-lifecycle.md` | Branch creation + cleanup (D2) | Naming convention at creation; mandatory delete at close |
 | local-CI-parity *(project ref)* | Optional pre-check (D2) | `act` how-to now in project `docs/references/`; the expected-green principle in the constitution; real CI is the gate |
