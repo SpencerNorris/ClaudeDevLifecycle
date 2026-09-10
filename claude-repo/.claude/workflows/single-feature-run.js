@@ -671,16 +671,25 @@ async function detachWorktrees(ctx, phaseName, pass, tag = "reconcile") {
  * without this check a resumed run whose ctx.branch the human has checked out
  * in the MAIN working tree (e.g. an `existingBranch` resume) would silently
  * repoint their HEAD's branch out from under them. Escalate instead and let
- * the human fast-forward it themselves. */
+ * the human fast-forward it themselves.
+ *
+ * I5 (2026-09-10): step 1 checks whether the branch ref exists yet before
+ * running the ancestor check; the implementer works in its own `isolation:
+ * "worktree"` sandbox, so the branch it just created is not guaranteed to
+ * already exist as a ref in this repo the first time reconcileBranch runs for
+ * it. Ported from federated-run.js's reconcileBranch, which needed this for
+ * the same reason (a feature's implementer creates its branch inside its own
+ * isolated worktree). */
 async function reconcileBranch(ctx, implementResult, phaseName, pass) {
   const sha = implementResult.headSha;
   await detachWorktrees(ctx, phaseName, pass);
   const r = await mechanical(ctx, "reconcile-branch", phaseName,
     "(pass " + pass + ")\n" +
       "0. `git worktree list --porcelain`; if the FIRST entry (the main working tree) has `branch refs/heads/" + ctx.branch + "`, return ok=false, sha=`" + sha + "`, detail='" + ctx.branch + " is checked out in the main working tree at <path>; the run never touches it — fast-forward it to " + sha + " yourself, then resume' (fill in <path> with that entry's worktree path).\n" +
-      "1. `git merge-base --is-ancestor " + ctx.branch + " " + sha + "`; if the exit code is non-zero return ok=false, sha=`" + sha + "`, detail='" + ctx.branch + " is not an ancestor of " + sha + "'.\n" +
-      "2. `git update-ref refs/heads/" + ctx.branch + " " + sha + "`.\n" +
-      "3. `git rev-parse " + ctx.branch + "` must print `" + sha + "`. Return ok=true, sha=that value, detail='fast-forwarded'.",
+      "1. `git rev-parse --verify --quiet refs/heads/" + ctx.branch + "`; if that fails, the ref does not exist yet — skip step 2's ancestor check entirely (git update-ref will create it in step 3).\n" +
+      "2. Otherwise: `git merge-base --is-ancestor " + ctx.branch + " " + sha + "`; if the exit code is non-zero return ok=false, sha=`" + sha + "`, detail='" + ctx.branch + " is not an ancestor of " + sha + "'.\n" +
+      "3. `git update-ref refs/heads/" + ctx.branch + " " + sha + "`.\n" +
+      "4. `git rev-parse " + ctx.branch + "` must print `" + sha + "`. Return ok=true, sha=that value, detail='fast-forwarded'.",
     RECONCILE_SCHEMA);
   if (!r.ok || r.sha !== sha) {
     ctx.failureContext = "Branch reconciliation failed: " + r.detail;
