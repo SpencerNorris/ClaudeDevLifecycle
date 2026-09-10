@@ -379,7 +379,7 @@ test("single: a billing-red poll takes the skip path instead of pausing", async 
   assert.ok(!run.labels.includes("pause-for-human"));
 });
 
-test("single: a red CI fix is reconciled and pinned like any implement, and the run cleans up on green", async () => {
+test("single: a red CI fix is reconciled like any implement (M8: the single CI fix does not pin), and the run cleans up on green", async () => {
   const scenario = { ...HAPPY,
     "poll-ci": (p, o, n) => (n === 0 ? { status: "red", blocker: "code", failingJobs: ["unit"], logsExcerpt: "1 failed" } : R.ciGreen),
     "fix-ci-and-repush": { ...R.implement, headSha: SHA_B },
