@@ -47,7 +47,11 @@ export async function runWorkflowRecording(scriptPath, args, scenario) {
   const body = source.replace(/^export const meta/m, "const meta");
   const labels = [], prompts = [], seen = new Set(), counts = {};
   const pick = (label) => {
-    if (label in scenario) return scenario[label];
+    // M14: `in` walks the prototype chain — a label matching an
+    // Object.prototype property name (e.g. "constructor", "toString") would
+    // otherwise resolve to that inherited method instead of throwing
+    // "unmodelled agent label".
+    if (Object.prototype.hasOwnProperty.call(scenario, label)) return scenario[label];
     const prefix = Object.keys(scenario).find((k) => k.endsWith("*") && label.startsWith(k.slice(0, -1)));
     if (prefix) return scenario[prefix];
     throw new Error("unmodelled agent label: " + label);
