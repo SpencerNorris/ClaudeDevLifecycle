@@ -659,12 +659,20 @@ async function detachWorktrees(ctx, phaseName, pass, tag = "reconcile") {
 
 /** Move ctx.branch to the implementer's headSha, or escalate when the commit
  * does not descend from the branch (spec D1). Detaches any holder first so a
- * dirty holder cannot block the ref update. Sets ctx.headSha. */
+ * dirty holder cannot block the ref update. Sets ctx.headSha.
+ *
+ * Fix round 1 (2026-09-10): step 0 guards against a latent hazard —
+ * `git update-ref` does not refuse a branch that is currently checked out, so
+ * without this check a resumed run whose ctx.branch the human has checked out
+ * in the MAIN working tree (e.g. an `existingBranch` resume) would silently
+ * repoint their HEAD's branch out from under them. Escalate instead and let
+ * the human fast-forward it themselves. */
 async function reconcileBranch(ctx, implementResult, phaseName, pass) {
   const sha = implementResult.headSha;
   await detachWorktrees(ctx, phaseName, pass);
   const r = await mechanical(ctx, "reconcile-branch", phaseName,
     "(pass " + pass + ")\n" +
+      "0. `git worktree list --porcelain`; if the FIRST entry (the main working tree) has `branch refs/heads/" + ctx.branch + "`, return ok=false, sha=`" + sha + "`, detail='" + ctx.branch + " is checked out in the main working tree at <path>; the run never touches it — fast-forward it to " + sha + " yourself, then resume' (fill in <path> with that entry's worktree path).\n" +
       "1. `git merge-base --is-ancestor " + ctx.branch + " " + sha + "`; if the exit code is non-zero return ok=false, sha=`" + sha + "`, detail='" + ctx.branch + " is not an ancestor of " + sha + "'.\n" +
       "2. `git update-ref refs/heads/" + ctx.branch + " " + sha + "`.\n" +
       "3. `git rev-parse " + ctx.branch + "` must print `" + sha + "`. Return ok=true, sha=that value, detail='fast-forwarded'.",

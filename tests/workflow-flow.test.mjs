@@ -209,6 +209,22 @@ test("single: the first implement is not preceded by a detach (no branch exists 
   assert.match(pin.prompt, /pass 0/);
 });
 
+test("single: every reconcile-branch prompt guards against a branch checked out in the main working tree", async () => {
+  // Fix round 1, IMPORTANT 3: git update-ref does not refuse a branch that is
+  // currently checked out, so reconcileBranch must check for — and refuse to
+  // touch — a branch the human has checked out in the MAIN working tree
+  // before ever moving its ref. This must hold on every dispatch, not just
+  // the first: assert it against the happy path's only reconcile-branch call.
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const reconciles = run.prompts.filter((p) => p.label === "reconcile-branch");
+  assert.ok(reconciles.length > 0, "reconcile-branch never dispatched");
+  for (const r of reconciles) {
+    assert.match(r.prompt, /main working tree/, "reconcile-branch prompt missing the main-working-tree guard: " + r.prompt);
+    assert.match(r.prompt, /feat\/dark-mode/, "reconcile-branch prompt missing the branch name");
+  }
+});
+
 test("single: a resume with existingBranch detaches that branch's holders before the first implement", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, existingBranch: "feat/dark-mode" }, HAPPY);
   const i = run.labels.indexOf("implement-tdd");
@@ -527,12 +543,60 @@ test("federated: a feature whose reconcile fails is excluded and the batch conti
   const cleanupF2 = run.prompts.find((p) => p.label === T2 + "cleanup-worktrees");
   assert.ok(cleanupF2, "feat:f2:cleanup-worktrees never dispatched: " + run.labels.join(", "));
   assert.match(cleanupF2.prompt, /feature escalation/);
-  assert.ok(
-    run.labels.some((l) => l === "escalate:feat:f2" || l === "pause-feature-for-human:f2"),
-    "expected an escalate:*/pause-feature-for-human:f2-style label for f2: " + run.labels.join(", ")
-  );
+  // A reconcile failure is a CODE failure (the branch does not descend from
+  // the commit), not an external blocker — it must escalate, never pause.
+  assert.ok(run.labels.includes("escalate:feat:f2"), "expected escalate:feat:f2 for f2: " + run.labels.join(", "));
+  assert.ok(!run.labels.includes("pause-feature-for-human:f2"), "a code failure must escalate, not pause: " + run.labels.join(", "));
   assert.ok(!run.labels.includes("escalate:feat:f1"), "f1 must not be escalated");
   assert.ok(!run.labels.includes("pause-feature-for-human:f1"), "f1 must not be paused");
   assert.ok(run.labels.includes(T1 + "validate-and-dod"), "f1 should reach validate-and-dod: " + run.labels.join(", "));
   assert.ok(run.labels.includes("integrate"), "the batch should still integrate f1: " + run.labels.join(", "));
+  const integratePrompt = run.prompts.find((p) => p.label === "integrate");
+  assert.ok(integratePrompt, "integrate never dispatched: " + run.labels.join(", "));
+  assert.doesNotMatch(integratePrompt.prompt, /light mode/, "only reviewed-green features may reach the integrate manifest — f2 never got there");
+});
+
+test("federated: a dead batch cleanup agent does not recurse forever — it escalates once, guarded", async () => {
+  // Drive batch CI to red K=3 times so the last attempt calls batchCtx.fail
+  // ("code") -> batchEscalate -> cleanupBatchWorktrees. The FIRST
+  // cleanup-worktrees call (after the fan-out barrier) succeeds; only the
+  // SECOND (inside batchEscalate) returns null. Without the ctx.cleaningUp
+  // guard on cleanupBatchWorktrees, that null result's mechanical()->ctx.fail
+  // ->pauseForHuman chain calls cleanupBatchWorktrees AGAIN before ever
+  // throwing — recursing forever, since pauseForHuman calls it as its own
+  // first statement, inside the still-open try. The guard must short-circuit
+  // that nested call so exactly ONE more "cleanup-worktrees" prompt is never
+  // dispatched for it, and the run terminates with exactly one pause.
+  const scenario = { ...FED_HAPPY,
+    "poll-ci": { status: "red", blocker: "code", failingJobs: ["unit"], logsExcerpt: "boom" },
+    "fix-ci-and-repush": { ...R.implement, headSha: SHA_B },
+    "reconcile-branch": reconcileEcho,
+    "cleanup-worktrees": (p, o, n) => (n === 0 ? R.cleanup : null),
+    "root-cause:batch": "diagnosed",
+    "escalate:batch": "posted",
+    "pause-for-human": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
+  const cleanupCalls = run.prompts.filter((p) => p.label === "cleanup-worktrees");
+  assert.equal(cleanupCalls.length, 2, "the guard must prevent a third (recursive) dispatch: " + cleanupCalls.length + " actual dispatches");
+  assert.equal(run.labels.filter((l) => l === "pause-for-human").length, 1, "exactly one pause, not a cascade");
+  assert.ok(run.labels.includes("escalate:batch"), "batchEscalate must still run its own diagnosis + escalation after the nested pause");
+});
+
+test("federated: an unexpected throw from a feature's own dispatch still escalates and cleans up (fix round 1, MINOR 4)", async () => {
+  // requireAgentResult throws a plain Error (not FeatureStop) when the design
+  // agent dies — processFeature's own try/catch rethrows anything that is not
+  // a FeatureStop, so this exercises the fan-out wrapper's OWN catch, not
+  // ctx.fail. Before the fix, that catch only logged locally and never
+  // touched the issue or the feature's worktrees, contradicting "never
+  // silently drop work; always escalate".
+  const args2 = { devBranch: "main", features: [{ id: "f1", title: "dark mode", issue: "owner/repo#1", plan: "do it" }] };
+  const scenario = { ...HAPPY, "feat:f1:design-review": null, "root-cause:*": "diagnosed", "escalate:*": "posted" };
+  const run = await runWorkflowRecording(SCRIPTS.federated, args2, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.ok(run.labels.includes("escalate:feat:f1"), "the errored feature must still be escalated: " + run.labels.join(", "));
+  assert.equal(run.result.shipped, false, "nothing reviewed-green — nothing to integrate or ship");
+  assert.equal(run.result.escalated.length, 1);
+  assert.equal(run.result.escalated[0].feature, "f1");
 });

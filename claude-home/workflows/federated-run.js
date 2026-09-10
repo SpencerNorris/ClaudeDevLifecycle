@@ -96,9 +96,10 @@ export const meta = {
     { title: "Gates", detail: "Per feature: unit + lint + type-check in that feature's pinned run worktree, before any reviewer or smoke spends money on a red build. Failure loops back to Implement, capped K=3 (validateFailures)." },
     { title: "Review", detail: "Per feature: the review panel (adversarial + correctness always; security/performance opt-in), full diff on the first round then DELTA over each seat's own open findings (spec D3). Reject hands the critique back to an implementing agent, capped K=3 (reviewRejects)." },
     { title: "Validate", detail: "Per feature, once gates and review are both green: integration + regression, then a smoke test (happy path + every named edge + failure modes), producing a DoD report. A failure re-runs incrementally (spec D4) and loops back to Implement, capped K=3 (validateFailures, shared with Gates)." },
+    { title: "Fan-out", detail: "Only reached if a feature's own dispatch throws something other than its normal pause/escalate outcome (e.g. a terminal API error): the fan-out wrapper best-effort escalates and cleans up that feature so it is still surfaced to a human, never silently dropped." },
     { title: "Integrate", detail: "Merge each reviewed-green feature branch onto the shared dev branch, one merge per feature, in order. Serial — runs once for the whole batch after the fan-out barrier." },
     { title: "Ship", detail: "Push the dev branch and open exactly ONE dev->main pull request via the GitHub MCP server, aggregating every reviewed-green feature's DoD report." },
-    { title: "CI", detail: "Poll GitHub Actions for the one batch PR. On red, fix + re-push (reconciled and pinned like any implement), capped K=3. Exhaustion is terminal for the whole batch." },
+    { title: "CI", detail: "Poll GitHub Actions for the one batch PR. On red, fix + re-push (reconciled like any implement, per the single script's own CI fix), capped K=3. Exhaustion is terminal for the whole batch." },
   ],
 };
 
@@ -710,12 +711,21 @@ async function detachWorktrees(ctx, phaseName, pass, tag = "reconcile") {
  * is missing, the ancestor check (step 2) is skipped and `git update-ref`
  * creates it fresh at headSha (update-ref creates missing refs).
  *
+ * Fix round 1 (2026-09-10): step 0 guards against a latent hazard shared with
+ * single-feature-run.js — `git update-ref` does not refuse a branch that is
+ * currently checked out, so without this check the batch's own CI-fix
+ * reconcile (called on devBranch, where runOwnsBranch is false and so never
+ * detaches anything) could silently repoint devBranch out from under the
+ * human's main working tree. Escalate instead and let the human fast-forward
+ * it themselves.
+ *
  * Sets ctx.headSha. */
 async function reconcileBranch(ctx, implementResult, phaseName, pass) {
   const sha = implementResult.headSha;
   await detachWorktrees(ctx, phaseName, pass);
   const r = await mechanical(ctx, "reconcile-branch", phaseName,
     "(pass " + pass + ")\n" +
+      "0. `git worktree list --porcelain`; if the FIRST entry (the main working tree) has `branch refs/heads/" + ctx.branch + "`, return ok=false, sha=`" + sha + "`, detail='" + ctx.branch + " is checked out in the main working tree at <path>; the run never touches it — fast-forward it to " + sha + " yourself, then resume' (fill in <path> with that entry's worktree path).\n" +
       "1. `git rev-parse --verify --quiet refs/heads/" + ctx.branch + "`; if that fails, the ref does not exist yet — skip step 2's ancestor check entirely (git update-ref will create it in step 3).\n" +
       "2. Otherwise: `git merge-base --is-ancestor " + ctx.branch + " " + sha + "`; if the exit code is non-zero return ok=false, sha=`" + sha + "`, detail='" + ctx.branch + " is not an ancestor of " + sha + "'.\n" +
       "3. `git update-ref refs/heads/" + ctx.branch + " " + sha + "`.\n" +
@@ -785,13 +795,43 @@ async function cleanupWorktrees(ctx, phaseName, tag) {
  * once after the fan-out barrier and once more at each CI exit (green,
  * exhausted, and the quota-skip exit). `tag` keeps each call's prompt unique
  * (cache rule) since the label itself is always the unprefixed
- * "cleanup-worktrees". */
+ * "cleanup-worktrees".
+ *
+ * Fix round 1 (2026-09-10):
+ *   - Re-entrancy-guarded on ctx.cleaningUp, exactly like the per-feature
+ *     cleanupWorktrees (IMPORTANT 1). Without this, a dead cleanup agent
+ *     recurses forever: mechanical's null-result branch calls ctx.fail,
+ *     whose external-blocker path is pauseForHuman, which calls
+ *     cleanupBatchWorktrees again as its own first statement — before this
+ *     guard, the recursion happened inside the still-open try block, ahead
+ *     of any throw.
+ *   - Actually cleans (IMPORTANT 2): the earlier version only pruned and
+ *     always returned `removed: []`, so ANY worktree or side branch this run
+ *     recorded on the batch ctx (batchCtx.ownedWorktrees / .worktreeBranches
+ *     — populated by detachWorktrees/pinRunWorktree/the CI fix's
+ *     worktreeBranch report) was never actually removed — a real leak. It is
+ *     NOT true that "per-feature worktrees are removed by each feature's own
+ *     cleanup" covers this: that is only true for a feature that reached
+ *     reviewed-green or was itself paused/escalated (both call
+ *     cleanupWorktrees) — an ERRORED feature did not, until this same fix
+ *     round's MINOR 4 change. */
 async function cleanupBatchWorktrees(ctx, phaseName, tag) {
-  return mechanical(ctx, "cleanup-worktrees", phaseName,
-    "(" + tag + ")\n" +
-      "1. `git worktree prune`.\n" +
-      "2. Return ok=true and `removed`=[] (per-feature worktrees are removed by each feature's own cleanup; this step only reclaims pruned metadata).",
-    CLEANUP_SCHEMA);
+  if (ctx.cleaningUp) return { ok: true, removed: [] };
+  ctx.cleaningUp = true;
+  try {
+    const owned = ctx.ownedWorktrees.slice();
+    const sideBranches = ctx.worktreeBranches.slice();
+    const r = await mechanical(ctx, "cleanup-worktrees", phaseName,
+      "(" + tag + ")\n" +
+        "1. For each of these paths: " + (owned.length ? owned.join(", ") : "(none)") + " — if `git worktree list --porcelain` lists it and it is NOT the main working tree, run `git worktree remove <path>` (no --force). If git refuses (dirty tree), leave it and list the path in `detail`.\n" +
+        (sideBranches.length ? "2. For each of " + sideBranches.join(", ") + ": if `git merge-base --is-ancestor <name> " + devBranch + "` succeeds (merged into " + devBranch + "), run `git branch -d <name>` (never -D, and never delete " + devBranch + " itself); otherwise leave it.\n" : "") +
+        (sideBranches.length ? "3" : "2") + ". `git worktree prune`.\n" +
+        "Return ok=true and `removed` = the worktree paths actually removed in step 1.",
+      CLEANUP_SCHEMA);
+    return r;
+  } finally {
+    ctx.cleaningUp = false;
+  }
 }
 
 /** One reimplement dispatch with its fixed surrounding steps: detach, the
@@ -899,13 +939,20 @@ async function checkQuota(ctx) {
     QUOTA_SCHEMA);
 }
 
-async function finishWithoutCi(ctx, why) {
+/** `outcomes` is passed explicitly (fix round 1, MINOR 8) rather than closed
+ * over as the module-level `green`/`escalated` consts: those are declared
+ * ~300 lines below this function in the main flow, so a closure over them
+ * would be a TDZ hazard if this were ever called earlier (e.g. by a future
+ * caller before the fan-out barrier runs). */
+async function finishWithoutCi(ctx, why, outcomes) {
   await agent(
     "Post ONE short comment on PR " + ctx.prUrl + " via the GitHub MCP server: 'CI was not run by the autonomous workflow: " + why + ". All reviewed-green features passed gates, review panel and smoke; see the PR body.' Do not push, merge or modify code.",
     { label: "comment-ci-skipped", phase: "CI", model: "sonnet", effort: "low" }
   );
   try { await cleanupBatchWorktrees(ctx, "CI", "ci skipped"); } catch (e) { log("cleanup before CI-skip return failed: " + e.message); }
   log("CI skipped (" + why + "). PR awaits Gate B: " + ctx.prUrl);
+  const green = outcomes.filter((o) => o && !o.escalated);
+  const escalated = outcomes.filter((o) => o && o.escalated);
   return {
     prUrl: ctx.prUrl,
     shipped: true,
@@ -942,6 +989,7 @@ function makeFeatureCtx(feature) {
     lastCritique: null,       // the standing critique when prevReviewSha === headSha (no new commit landed)
     findings: {},             // per reviewer seat: id -> finding, the delta-review ledger (spec D3)
     reviewVerdictSection: "",
+    prUrl: null,              // a feature never opens its own PR; kept so postEscalation's prompt reads uniformly across ctx shapes
     failureContext: "",
     lastReimplementNote: null,
     cleaningUp: false,        // per-ctx re-entrancy guard (Task 10: was module-level in single-feature-run.js)
@@ -979,10 +1027,16 @@ function makeFeatureCtx(feature) {
  * All agent() calls pass opts.phase explicitly (never the global phase())
  * so concurrent features never race the shared phase state.
  *
+ * `ctx` is built by the CALLER (the fan-out wrapper, via makeFeatureCtx) and
+ * passed in rather than created here (fix round 1, MINOR 4): the wrapper's
+ * own catch block needs the SAME ctx object to best-effort escalate + clean
+ * up a feature whose processFeature call threw something other than
+ * FeatureStop, so the ctx must exist and be shared before this function's
+ * try starts, not be scoped inside it.
+ *
  * Returns: { feature, branch, escalated: boolean, dodReport?: string, reason?: string }
  */
-async function processFeature(feature, devBranchName) {
-  const ctx = makeFeatureCtx(feature);
+async function processFeature(feature, ctx, devBranchName) {
   try {
     // ---- PHASE 0: DESIGN REVIEW (spec D2) ---------------------------------
     const design = requireAgentResult(await agent(
@@ -1206,19 +1260,24 @@ batchCtx.fail = async (stage, kind, detail, attempts) => {
 // would become a null and be silently dropped by .filter(Boolean) — the feature
 // would vanish from the batch with no record, violating "never silently drop work;
 // always escalate". So we wrap each thunk: any uncaught throw becomes an explicit
-// escalated+errored outcome, so the feature is still surfaced to the human.
+// escalated+errored outcome, so the feature is still surfaced to the human — fix
+// round 1 (MINOR 4) makes this literally true: the wrapper builds the feature's
+// ctx itself (so it is available even though processFeature never got past its
+// own try), and best-effort posts a real escalation comment + runs cleanup,
+// exactly like any other per-feature failure, instead of just logging locally.
 const outcomes = (
   await parallel(
     features.map((feature) => async () => {
+      const ctx = makeFeatureCtx(feature);
       try {
-        return await processFeature(feature, devBranch);
+        return await processFeature(feature, ctx, devBranch);
       } catch (err) {
-        const reason =
-          "processFeature threw (uncaught — a terminal error, not a normal " +
-          "per-feature escalation): " +
-          (err && err.message ? err.message : String(err));
+        const reason = "unexpected error: " + (err && err.message ? err.message : String(err));
         log("FEATURE ERRORED (uncaught throw): " + feature.id + " — " + reason);
-        return { feature, branch: null, escalated: true, errored: true, reason: reason };
+        ctx.failureContext = reason;
+        try { await cleanupWorktrees(ctx, "Fan-out", "feature error"); } catch (e2) { log(ctx.tag + ": best-effort cleanup for the errored feature failed: " + e2.message); }
+        try { await postEscalation("Fan-out", 1, ctx, ctx.tag); } catch (e2) { log(ctx.tag + ": best-effort escalation for the errored feature failed: " + e2.message); }
+        return { feature, branch: ctx.branch, escalated: true, errored: true, reason: reason };
       }
     })
   )
@@ -1301,7 +1360,7 @@ phase("CI");
 let ciGreen = false;
 
 const quota = await checkQuota(batchCtx);
-if (quota.quota === "exhausted") return await finishWithoutCi(batchCtx, "the GitHub Actions quota is exhausted (" + quota.detail + ")");
+if (quota.quota === "exhausted") return await finishWithoutCi(batchCtx, "the GitHub Actions quota is exhausted (" + quota.detail + ")", outcomes);
 
 for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
   log("Batch CI fix window " + fixAttempt + " of " + K + ". Polling GitHub Actions.");
@@ -1317,7 +1376,8 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
         ship.prUrl +
         " (dev branch '" +
         devBranch +
-        "') via the GitHub MCP server. Return 'green' if all required checks passed, 'red' if a required check " +
+        "') at commit " + (batchCtx.headSha || "the pushed tip") +
+        " via the GitHub MCP server. Return 'green' if all required checks passed, 'red' if a required check " +
         "failed (include failing job names + a short log excerpt), 'pending' if still running. " +
         "If the PR reports no checks at all (the repository has no CI configured), that counts as 'green' — " +
         "do not wait for checks that will never start. " +
@@ -1342,7 +1402,7 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
   if (!ci) {
     await batchCtx.fail("CI", "usage_limit", "Batch CI poll agent died without returning a status (usage-limit or harness interruption).");
   }
-  if (ci.blocker === "billing") return await finishWithoutCi(batchCtx, "GitHub reported a billing/quota refusal: " + (ci.logsExcerpt || ci.blockerDetail || "").slice(0, 200));
+  if (ci.blocker === "billing") return await finishWithoutCi(batchCtx, "GitHub reported a billing/quota refusal: " + (ci.logsExcerpt || ci.blockerDetail || "").slice(0, 200), outcomes);
   if (isExternalBlocker(ci.blocker)) await batchCtx.fail("CI", ci.blocker, ci.blockerDetail || ci.logsExcerpt || ("blocker=" + ci.blocker));
 
   if (!ci || !terminal) {
@@ -1371,22 +1431,23 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
     await batchCtx.fail("CI", "code", batchCtx.failureContext, fixAttempt);
   }
 
-  // The CI-red fix gets the SAME reconciled dispatch as any implement: detach
-  // whatever holds the branch, run the fix, then reconcile + pin. detach is a
-  // no-op here (runOwnsBranch(batchCtx) is false — devBranch is never
-  // "owned"), but reconcile + pin both run for real: they move devBranch's
-  // ref to the fix's headSha and check it out into a pinned worktree.
+  // The CI-red fix gets the SAME reconciled dispatch as the single script's
+  // as-built CI fix (detach -> fix agent -> reconcile; no pin — fix round 1,
+  // IMPORTANT 2: an earlier version also pinned here, which is not what
+  // single-feature-run.js does for its own CI fix and left batchCtx.runWorktree
+  // referencing a worktree nothing ever reads or cleans). detach is a no-op
+  // here (runOwnsBranch(batchCtx) is false — devBranch is never "owned"), but
+  // reconcile runs for real: it moves devBranch's ref to the fix's headSha.
   await detachWorktrees(batchCtx, "CI", 100 + fixAttempt, "before-implement");
   const fix = requireAgentResult(await agent(
     "AUTONOMOUS federated run, CI-RED fix (reference/definition-of-done.md CI-red delta) — fix attempt " + fixAttempt + ". " +
-      "On the dev branch '" + devBranch + "' at " + (batchCtx.headSha || "its current tip") + ", read the failing CI logs via the GitHub MCP, fix the ROOT CAUSE (no shim, no weakened test, no skipped " +
+      "On the dev branch '" + devBranch + "' at " + (batchCtx.headSha || "the pushed tip") + ", read the failing CI logs via the GitHub MCP, fix the ROOT CAUSE (no shim, no weakened test, no skipped " +
       "check), re-validate the affected cases as a delta, then re-push the dev branch. Do NOT touch main.\n" + HEAD_SHA_CLAUSE + "\nFailure context:\n" + batchCtx.failureContext,
     { label: "fix-ci-and-repush", phase: "CI", model: "sonnet", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
   ), "CI FIX");
   if (fix.worktreeBranch) batchCtx.worktreeBranches.push(fix.worktreeBranch);
   if (isExternalBlocker(fix.blocker)) await batchCtx.fail("CI", fix.blocker, fix.blockerDetail || ("blocker=" + fix.blocker));
   await reconcileBranch(batchCtx, fix, "CI", 100 + fixAttempt);
-  await pinRunWorktree(batchCtx, "CI", 100 + fixAttempt);
   // Loop: the for-condition re-polls. Counter-controlled.
 }
 
