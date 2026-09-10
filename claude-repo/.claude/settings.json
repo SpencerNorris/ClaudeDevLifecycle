@@ -45,8 +45,19 @@
       "Bash(git push origin feat/*)",
       "Bash(git push origin fix/*)",
       "Bash(git push origin chore/*)",
-      "Bash(git push origin integration/*)"
+      "Bash(git push origin integration/*)",
+      "Bash(git worktree:*)",
+      "Bash(git update-ref refs/heads/:*)",
+      "Bash(git checkout --detach:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(gh api:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr edit:*)"
     ]
+  },
+  "attribution": {
+    "sessionUrl": false
   },
   "sandbox": {
     "filesystem": {
