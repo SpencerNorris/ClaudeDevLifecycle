@@ -1353,7 +1353,7 @@ const combinedReports = green
   .join("\n\n---\n\n");
 
 const ship = await agent(
-  "AUTONOMOUS federated run, SHIP phase (master-design-doc.md §7). Push the NON-MAIN dev branch '" +
+  "AUTONOMOUS federated run, SHIP phase (master-design-doc.md §7)" + (resumeNonce ? " (resume " + resumeNonce + ")" : "") + ". Push the NON-MAIN dev branch '" +
     devBranch +
     "' (never push main — the pre-push hook + settings forbid it) and open exactly ONE dev->main pull request " +
     "via the GitHub MCP server. The PR body MUST aggregate ALL the reviewed-green features' DoD reports (each " +

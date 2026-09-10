@@ -364,6 +364,14 @@ test("single: ship and CI prompts name the commit; the PR body is scrubbed after
   assert.match(run.prompts.find((p) => p.label === "poll-ci").prompt, new RegExp(SHA_A));
 });
 
+test("single: I9 — a resumed run's ship prompt carries the resume nonce (so a cached pushed:false is never replayed)", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "n1" }, HAPPY);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const ship = run.prompts.find((p) => p.label === "push-and-open-pr");
+  assert.ok(ship, "push-and-open-pr never dispatched");
+  assert.match(ship.prompt, /resume n1/);
+});
+
 test("single: a pending poll is not replayed as a cache collision; it resolves on the next poll", async () => {
   const scenario = { ...HAPPY,
     "poll-ci": (p, o, n) => (n === 0 ? { status: "pending", blocker: "none" } : R.ciGreen),

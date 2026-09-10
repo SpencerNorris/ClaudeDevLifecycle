@@ -1112,7 +1112,7 @@ if (!reviewed || !dodReport) {
 // ---------------------------------------------------------------------------
 phase("Ship");
 const ship = await agent(
-  "AUTONOMOUS single-feature run, SHIP phase (master-design-doc.md §5, D2). " +
+  "AUTONOMOUS single-feature run, SHIP phase (master-design-doc.md §5, D2)" + (resumeNonce ? " (resume " + resumeNonce + ")" : "") + ". " +
     "Push the NON-MAIN branch '" +
     ctx.branch +
     "' (at commit " + ctx.headSha + "; verify with `git rev-parse " + ctx.branch + "` that the branch points at " + ctx.headSha + " before pushing) to origin (the pre-push hook + settings allow tier branches; main is forbidden). " +
