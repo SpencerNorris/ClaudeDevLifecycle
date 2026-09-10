@@ -59,6 +59,19 @@ gate.
 Cost is not an excuse. The marginal cost of one broken-on-arrival
 feature is higher than the cost of a thorough smoke test.
 
+**Incremental re-smoke after a fix.** The first validate pass on a lineage
+runs every case. After a failure, the next pass diffs the files changed
+since the failing commit (`git diff --name-only <lastSmokeSha>..<headSha>`)
+and re-runs only the cases that failed last pass, plus every case whose
+`files` overlap that diff; every other case is marked `carried: true` and
+keeps its last real result — the stack stays up between attempts, and images
+are rebuilt only if a dependency manifest, a Dockerfile, a compose file, or
+an nginx template changed. Fallback to a full smoke instead, with the report
+saying why: the diff touches one of those infra files, or any file that no
+failed case's `files` names — which is also what happens when a failed case
+reports no `files` at all, since then nothing it names can ever match and
+every changed file counts as unnamed.
+
 ## Smoke test surface by type
 
 ### Frontend / UI
@@ -108,6 +121,38 @@ This is **not** "done." It is a clear handoff to a verifier who has
 access to the required environment. The user must explicitly accept
 this handoff for the work to be considered complete.
 
+## Blockers are not failures
+
+A validation that cannot run is not a validation that failed. Every structured
+result an autonomous run produces carries a `blocker`:
+
+| blocker | Meaning | What the run does |
+|---|---|---|
+| `none` | everything passed | proceed |
+| `code` | a gate or smoke case fails because of the change | the only kind that spends the K=3 retry budget |
+| `infra` | daemon down, disk full, service unreachable | pause for a human at once |
+| `credentials` | a stored key is missing, invalid or expired | pause |
+| `billing` | CI/provider refused for account reasons | pause |
+| `usage_limit` | an agent was killed by the account cap | pause; resume later |
+| `ambiguity` | the issue/spec cannot yield acceptance criteria | pause; a human clarifies |
+
+"Pause" means one short comment on the issue plus the `needs-human` label —
+no root-cause diagnosis, no reimplementation, no retries. The run resumes
+(`resumeFromRunId` with a fresh `resumeNonce`) once the condition is fixed.
+
+**Preflight comes first.** Before a single test runs, verify every external
+resource the acceptance criteria depend on with the cheapest possible check:
+an LLM key via one minimal call through the app's configured provider, the
+Docker daemon and target services' health, disk headroom, GitHub reachability
+when the smoke needs it. A failed preflight returns the matching blocker
+immediately. Running 3,800 unit tests and then discovering the key is dead is
+the failure mode this rule exists to prevent.
+
+**Rebuild only when it matters.** In a dev-shaped stack (bind-mounted source
+with hot reload) code changes are live in seconds; rebuild images only when
+dependencies, a Dockerfile, or a proxy template change. Needless full rebuilds
+are how a host disk got filled and a Docker VM corrupted.
+
 ## Report structure
 
 Every "done" report follows this structure:
@@ -125,6 +170,14 @@ Every "done" report follows this structure:
 
 ## Smoke test transcript
 <the actual transcript — commands, outputs, screenshots, edge cases covered>
+
+| id | name | pass | carried | detail | files |
+|---|---|---|---|---|---|
+| AC1 | <case name> | true/false | false | <one-line result> | <source files this case exercises> |
+| E1 | <derived edge case> | true/false | true | carried from pass <N> | <files> |
+
+**Carried forward (not re-run this pass):**
+- <case id> — carried from pass <N>
 
 ## Docs updated
 - <files>
