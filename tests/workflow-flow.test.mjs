@@ -184,16 +184,29 @@ test("cache-collision guard: a cacheable entry does not trip the collision check
   );
 });
 
-test("single: the first implement is not preceded by a detach (no branch exists yet) and is followed by reconcile and pin", async () => {
+test("single: the first implement is not preceded by a detach (no branch exists yet); reconcile detaches its own holder, then pins", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
   const i = run.labels.indexOf("implement-tdd");
   assert.ok(i > -1, "implement-tdd never dispatched: " + (run.error && run.error.message));
   assert.ok(!run.labels.slice(0, i).includes("detach-worktrees"), "no detach before the first implement");
-  assert.equal(run.labels[i + 1], "reconcile-branch");
-  assert.equal(run.labels[i + 2], "pin-run-worktree");
+  // reconcileBranch now detaches whatever worktree holds the freshly-created
+  // branch (e.g. the implementer's own isolated worktree) before moving the
+  // ref, and records that path for later cleanup — so "detach-worktrees" is
+  // dispatched from inside reconcileBranch, ahead of its own mechanical step.
+  assert.equal(run.labels[i + 1], "detach-worktrees");
+  assert.equal(run.labels[i + 2], "reconcile-branch");
+  assert.equal(run.labels[i + 3], "pin-run-worktree");
   const pin = run.prompts.find((p) => p.label === "pin-run-worktree");
   assert.match(pin.prompt, new RegExp(SHA_A));
   assert.match(pin.prompt, /pass 0/);
+});
+
+test("single: a resume with existingBranch detaches that branch's holders before the first implement", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, existingBranch: "feat/dark-mode" }, HAPPY);
+  const i = run.labels.indexOf("implement-tdd");
+  assert.ok(i > -1, "implement-tdd never dispatched: " + (run.error && run.error.message));
+  assert.equal(run.labels[i - 1], "detach-worktrees");
+  assert.match(run.prompts.find((p) => p.label === "detach-worktrees").prompt, /feat\/dark-mode/);
 });
 
 test("single: a diverged reconcile cleans up, then escalates; no later stage runs", async () => {
