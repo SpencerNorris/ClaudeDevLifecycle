@@ -659,6 +659,12 @@ async function pauseFeatureForHuman(feature, stage, blocker, ctx) {
  * throws, like batchEscalate's throwing counterpart for batch CI exhaustion.
  */
 async function pauseForHuman(stage, blocker, ctx) {
+  // M6: deliberately keep the swallow here, unlike batchEscalate(). A nested
+  // EscalationStop means the pause comment for the cleanup agent's own death
+  // was already posted by the inner call, and THIS call still needs to post
+  // its own pause comment for the original failure either way — there is no
+  // expensive root-cause diagnosis step to double up on (that is what makes
+  // batchEscalate()'s duplicate worth rethrowing to avoid).
   try { await cleanupBatchWorktrees(ctx, stage, "pause " + stage); } catch (e) { log("cleanup before batch pause failed: " + e.message); }
   log(
     "PAUSED FOR HUMAN (batch) at stage '" + stage + "': blocker=" + blocker + " — " +
@@ -689,7 +695,13 @@ async function pauseForHuman(stage, blocker, ctx) {
  * ctx (mirrors single-feature-run.js's escalate(): clean up FIRST, diagnose +
  * post, then throw). Always throws EscalationStop; never returns. */
 async function batchEscalate(stage, attempts, ctx) {
-  try { await cleanupBatchWorktrees(ctx, stage, "escalate " + stage); } catch (e) { log("cleanup before batch escalation failed: " + e.message); }
+  // M6: a dead cleanup agent routes through mechanical() -> ctx.fail() ->
+  // pauseForHuman(), which already posts its own terminal comment and throws
+  // EscalationStop. Swallowing that here and continuing to this function's
+  // OWN diagnosis + escalation comment would post a SECOND terminal for one
+  // failure. Rethrow instead; any other (non-EscalationStop) cleanup error is
+  // still just logged, since escalation must proceed either way.
+  try { await cleanupBatchWorktrees(ctx, stage, "escalate " + stage); } catch (e) { if (e instanceof EscalationStop) throw e; log("cleanup before batch escalation failed: " + e.message); }
   const rootCause = await postEscalation(stage, attempts, ctx, "batch");
   throw new EscalationStop(stage, attempts, rootCause);
 }

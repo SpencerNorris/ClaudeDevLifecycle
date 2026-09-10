@@ -246,6 +246,31 @@ test("single: a diverged reconcile cleans up, then escalates; no later stage run
   assert.ok(!run.labels.includes("gates"));
 });
 
+test("single: a dead cleanup agent during escalate does not recurse forever — it pauses once, no second terminal (M15)", async () => {
+  // Mirrors the federated test's shape ("a dead batch cleanup agent does not
+  // recurse forever"): a diverged reconcile drives escalate(), whose own
+  // cleanupWorktrees call's mechanical "cleanup-worktrees" agent dies. That
+  // routes through mechanical() -> pauseForHuman() directly (single script),
+  // which short-circuits its own nested cleanupWorktrees call (the
+  // module-level `cleaningUp` guard) and posts exactly one pause-for-human
+  // comment before throwing. Per M6, escalate() rethrows that nested
+  // EscalationStop instead of swallowing it and running its own root-cause
+  // diagnosis + escalate-to-issue comment — a single dead cleanup agent must
+  // yield exactly one cleanup-worktrees dispatch and one terminal, not two.
+  const scenario = { ...HAPPY,
+    "reconcile-branch": { ok: false, sha: SHA_B, detail: "feat/dark-mode is not an ancestor of " + SHA_B },
+    "cleanup-worktrees": null,
+    "pause-for-human": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
+  const cleanupCalls = run.prompts.filter((p) => p.label === "cleanup-worktrees");
+  assert.equal(cleanupCalls.length, 1, "the guard must prevent a recursive second dispatch: " + cleanupCalls.length);
+  assert.equal(run.labels.filter((l) => l === "pause-for-human").length, 1, "exactly one pause, not a cascade");
+  assert.ok(!run.labels.includes("escalate-to-issue"), "escalate() must not post a second terminal after the nested pause already did");
+  assert.ok(!run.labels.includes("root-cause-diagnosis"), "no root-cause diagnosis runs for an external usage-limit pause");
+});
+
 test("single: a design-stage pause does not run cleanup (the run owns nothing yet)", async () => {
   const scenario = { ...HAPPY,
     "design-review": { ...R.design, blocker: "ambiguity", blockerDetail: "no acceptance criteria" },
@@ -652,7 +677,7 @@ test("federated: a feature whose reconcile fails is excluded and the batch conti
   assert.doesNotMatch(integratePrompt.prompt, /light mode/, "only reviewed-green features may reach the integrate manifest — f2 never got there");
 });
 
-test("federated: a dead batch cleanup agent does not recurse forever — it escalates once, guarded", async () => {
+test("federated: a dead batch cleanup agent does not recurse forever — the nested pause wins, no second terminal (M6)", async () => {
   // Drive batch CI to red K=3 times so the last attempt calls batchCtx.fail
   // ("code") -> batchEscalate -> cleanupBatchWorktrees. The FIRST
   // cleanup-worktrees call (after the fan-out barrier) succeeds; only the
@@ -662,7 +687,10 @@ test("federated: a dead batch cleanup agent does not recurse forever — it esca
   // throwing — recursing forever, since pauseForHuman calls it as its own
   // first statement, inside the still-open try. The guard must short-circuit
   // that nested call so exactly ONE more "cleanup-worktrees" prompt is never
-  // dispatched for it, and the run terminates with exactly one pause.
+  // dispatched for it. The nested pauseForHuman's EscalationStop then
+  // propagates through batchEscalate's own cleanup call; per M6,
+  // batchEscalate rethrows it instead of swallowing it and posting a SECOND
+  // terminal — its own root-cause diagnosis and escalate:batch comment never run.
   const scenario = { ...FED_HAPPY,
     "poll-ci": { status: "red", blocker: "code", failingJobs: ["unit"], logsExcerpt: "boom" },
     "fix-ci-and-repush": { ...R.implement, headSha: SHA_B },
@@ -677,7 +705,8 @@ test("federated: a dead batch cleanup agent does not recurse forever — it esca
   const cleanupCalls = run.prompts.filter((p) => p.label === "cleanup-worktrees");
   assert.equal(cleanupCalls.length, 2, "the guard must prevent a third (recursive) dispatch: " + cleanupCalls.length + " actual dispatches");
   assert.equal(run.labels.filter((l) => l === "pause-for-human").length, 1, "exactly one pause, not a cascade");
-  assert.ok(run.labels.includes("escalate:batch"), "batchEscalate must still run its own diagnosis + escalation after the nested pause");
+  assert.ok(!run.labels.includes("escalate:batch"), "batchEscalate must not post a second terminal after the nested pause already did");
+  assert.ok(!run.labels.includes("root-cause:batch"), "no root-cause diagnosis runs for an external usage-limit pause");
 });
 
 test("federated: an unexpected throw from a feature's own dispatch still escalates and cleans up (fix round 1, MINOR 4)", async () => {

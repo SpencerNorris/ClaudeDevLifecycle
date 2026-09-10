@@ -524,7 +524,13 @@ class EscalationStop extends Error {
  * `break` — control does not come back.
  */
 async function escalate(stage, attempts, context) {
-  try { await cleanupWorktrees(context, stage, "escalate " + stage); } catch (e) { log("cleanup before escalation failed: " + e.message); }
+  // M6: a dead cleanup agent routes through mechanical() -> pauseForHuman(),
+  // which already posts its own terminal comment and throws EscalationStop.
+  // Swallowing that here and continuing to this function's OWN diagnosis +
+  // escalate-to-issue comment would post a SECOND terminal for one failure.
+  // Rethrow instead; any other (non-EscalationStop) cleanup error is still
+  // just logged, since escalation must proceed either way.
+  try { await cleanupWorktrees(context, stage, "escalate " + stage); } catch (e) { if (e instanceof EscalationStop) throw e; log("cleanup before escalation failed: " + e.message); }
   log(
     "CIRCUIT BREAKER: stage '" +
       stage +
@@ -611,6 +617,12 @@ async function escalate(stage, attempts, context) {
  * ALWAYS throws, like escalate().
  */
 async function pauseForHuman(stage, blocker, context) {
+  // M6: deliberately keep the swallow here, unlike escalate()/batchEscalate().
+  // A nested EscalationStop means the pause comment for the cleanup agent's
+  // own death was already posted by the inner call, and THIS call still needs
+  // to post its own pause comment for the original failure either way — there
+  // is no expensive root-cause diagnosis step to double up on (that is what
+  // makes escalate()'s duplicate worth rethrowing to avoid).
   try { await cleanupWorktrees(context, stage, "pause " + stage); } catch (e) { log("cleanup before pause failed: " + e.message); }
   log(
     "PAUSED FOR HUMAN at stage '" + stage + "': blocker=" + blocker + " — " +
