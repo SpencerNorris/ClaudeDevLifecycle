@@ -240,7 +240,7 @@ flowchart TD
     F -->|fix in PR| E
     F -->|orthogonal| G["File GH issue<br/>cross-link to PR"]
     G --> E
-    F -->|none| H["Gates: unit + integration<br/>+ lint + type (at pinned commit)"]
+    F -->|none| H["Gates: unit + lint + type<br/>(at pinned commit)"]
 
     H --> HG{"Green?"}
     HG -->|no| E
