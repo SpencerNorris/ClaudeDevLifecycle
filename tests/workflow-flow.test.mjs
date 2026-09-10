@@ -1,8 +1,10 @@
 // tests/workflow-flow.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -17,6 +19,10 @@ export const SHA_C = "c".repeat(40);
 /** Minimal schema check mirroring what the harness enforces on agent() results. */
 function checkSchema(schema, value, label) {
   if (!schema) return;
+  // A dead agent is modelled as `null` (the workflow has explicit null-handling
+  // paths, e.g. requireAgentResult) — that is a valid result to hand back, not
+  // a schema violation, so there is nothing to check against `schema.required`.
+  if (value === null) return;
   assert.equal(typeof value, "object", `${label}: result must be an object`);
   for (const k of schema.required || []) assert.ok(k in value, `${label}: result missing required "${k}"`);
   if (schema.additionalProperties === false) {
@@ -59,7 +65,10 @@ export async function runWorkflowRecording(scriptPath, args, scenario) {
       prompts.push({ label, prompt, opts });
       counts[label] = (counts[label] ?? -1) + 1;
       const r = typeof entry === "function" ? entry(prompt, opts, counts[label]) : entry;
-      checkSchema(opts && opts.schema, r, label);
+      // A null result models a dead agent (usage-limit kill, etc.) — the
+      // caller's own null-handling path (requireAgentResult) is what's under
+      // test then, not the schema.
+      if (r !== null) checkSchema(opts && opts.schema, r, label);
       return r;
     },
     parallel: async (thunks) => {
@@ -84,7 +93,11 @@ export async function runWorkflowRecording(scriptPath, args, scenario) {
 
 /** Compare a label sequence where one segment (the parallel panel) is order-free. */
 export function assertSequence(actual, expected) {
-  assert.equal(actual.length, expected.length, `label count: ${actual.join(" > ")}`);
+  // `expected` entries are either a single label or a nested array describing
+  // one parallel panel segment — its length in labels is not its length as an
+  // `expected` entry, so count labels, not entries.
+  const n = expected.reduce((a, e) => a + (Array.isArray(e) ? e.length : 1), 0);
+  assert.equal(actual.length, n, `label count: ${actual.join(" > ")}`);
   let i = 0;
   for (const e of expected) {
     if (Array.isArray(e)) {
@@ -158,4 +171,36 @@ test("single: implement prompt asks for headSha and the schema requires it", asy
   assert.match(impl.prompt, /no-shed/);
   assert.equal(impl.opts.schema.required.includes("headSha"), true);
   assert.equal(impl.opts.schema.properties.headSha.pattern, "^[0-9a-f]{40}$");
+});
+
+test("cache-collision guard: a cacheable entry does not trip the collision check", async () => {
+  const scenario = { ...HAPPY, "implement-tdd": { cacheable: true, result: R.implement } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  const impl = run.prompts.find((p) => p.label === "implement-tdd");
+  assert.ok(impl, "implement-tdd never dispatched: " + (run.error && run.error.message));
+  assert.ok(
+    !(run.error && /cache collision/.test(run.error.message)),
+    "a cacheable entry must never trigger the cache-collision guard: " + (run.error && run.error.message)
+  );
+});
+
+test("cache-collision guard: a genuine repeated (label, prompt) throws unless cacheable", async () => {
+  // Neither workflow script repeats a verbatim prompt for the same label on
+  // the happy path, so drive the stub directly with a synthetic script body
+  // that calls agent() twice with the identical (label, prompt) pair — this
+  // is exactly the case the real harness would silently serve from cache.
+  const dir = await mkdtemp(path.join(tmpdir(), "workflow-flow-test-"));
+  const scriptPath = path.join(dir, "dup-prompt.mjs");
+  try {
+    await writeFile(
+      scriptPath,
+      'await agent("do the exact same thing", { label: "dup" });\n' +
+        'await agent("do the exact same thing", { label: "dup" });\n'
+    );
+    const run = await runWorkflowRecording(scriptPath, {}, { dup: { ok: true } });
+    assert.ok(run.error, "expected the second identical (label, prompt) call to throw");
+    assert.match(run.error.message, /cache collision/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
