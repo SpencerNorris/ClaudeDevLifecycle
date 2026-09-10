@@ -1,6 +1,7 @@
 ---
 name: performance-reviewer
 description: Read-only performance auditor, dispatched DISCRETIONARILY (opt-in per project, for hot paths, large inputs, DB access, or loops over user-scale data). Finds real performance bugs in a change (accidental quadratic, N+1, unbounded growth) — not micro-optimizations or style. Blocking structured verdict.
+model: opus
 tools: Read, Grep, Glob, Bash
 ---
 

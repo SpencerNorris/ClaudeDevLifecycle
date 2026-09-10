@@ -1,6 +1,7 @@
 ---
 name: security-reviewer
 description: Read-only security auditor, dispatched DISCRETIONARILY (opt-in per project, for work that handles untrusted input, auth, secrets, user data, network, or OS/file access). Finds real, exploitable vulnerabilities in a change — not theoretical hardening or style. Blocking structured verdict.
+model: opus
 tools: Read, Grep, Glob, Bash
 ---
 
