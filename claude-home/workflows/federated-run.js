@@ -863,7 +863,11 @@ async function cleanupBatchWorktrees(ctx, phaseName, tag) {
   ctx.cleaningUp = true;
   try {
     const owned = ctx.ownedWorktrees.slice();
-    const sideBranches = ctx.worktreeBranches.slice();
+    // M4: exclude devBranch in code, not only in the prompt text below — a
+    // stray worktreeBranch report of devBranch is normally an ancestor of
+    // devBranch itself (trivially true) and must never even be OFFERED to
+    // the `git branch -d` step.
+    const sideBranches = ctx.worktreeBranches.filter((b) => b && b !== devBranch);
     const r = await mechanical(ctx, "cleanup-worktrees", phaseName,
       "(" + tag + ")\n" +
         "1. For each of these paths: " + (owned.length ? owned.join(", ") : "(none)") + " — if `git worktree list --porcelain` lists it and it is NOT the main working tree, run `git worktree remove <path>` (no --force). If git refuses (dirty tree), leave it and list the path in `detail`.\n" +

@@ -363,6 +363,15 @@ test("single: a red CI fix is reconciled and pinned like any implement, and the 
   assert.equal(run.labels[run.labels.length - 1], "cleanup-worktrees");
 });
 
+test("single: M4 — a stray worktreeBranch report of devBranch is never offered to cleanup's branch-delete step", async () => {
+  const scenario = { ...HAPPY, "implement-tdd": { ...R.implement, worktreeBranch: "main" } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const cleanup = run.prompts.find((p) => p.label === "cleanup-worktrees");
+  assert.ok(cleanup, "cleanup-worktrees never dispatched");
+  assert.doesNotMatch(cleanup.prompt, /refs\/heads\/main\b/, "devBranch must never appear as a side branch to delete: " + cleanup.prompt);
+});
+
 test("single: ship and CI prompts name the commit; the PR body is scrubbed after ship", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
   const ship = run.prompts.find((p) => p.label === "push-and-open-pr");
@@ -686,6 +695,21 @@ test("federated: an unexpected throw from a feature's own dispatch still escalat
   assert.equal(run.result.shipped, false, "nothing reviewed-green — nothing to integrate or ship");
   assert.equal(run.result.escalated.length, 1);
   assert.equal(run.result.escalated[0].feature, "f1");
+});
+
+test("federated: M4 — a stray worktreeBranch report of devBranch is never offered to cleanupBatchWorktrees's branch-delete step", async () => {
+  const scenario = { ...FED_HAPPY,
+    "poll-ci": (p, o, n) => (n === 0 ? { status: "red", blocker: "code", failingJobs: ["unit"], logsExcerpt: "boom" } : R.ciGreen),
+    "fix-ci-and-repush": { ...R.implement, headSha: SHA_B, worktreeBranch: "main" },
+    "reconcile-branch": reconcileEcho,
+  };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const cleanupCalls = run.prompts.filter((p) => p.label === "cleanup-worktrees");
+  assert.ok(cleanupCalls.length > 0, "cleanup-worktrees never dispatched");
+  for (const c of cleanupCalls) {
+    assert.doesNotMatch(c.prompt, /git branch -d/, "a devBranch-only worktreeBranch report must never produce a branch-delete step: " + c.prompt);
+  }
 });
 
 test("federated: a batch-level pause falls back to the PR URL, then a plain note, when args.issue is absent (I6)", async () => {

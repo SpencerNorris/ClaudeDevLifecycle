@@ -759,7 +759,12 @@ async function cleanupWorktrees(ctx, phaseName, tag) {
   if (cleaningUp) return { ok: true, removed: [] };
   cleaningUp = true;
   try {
-    const side = ctx.worktreeBranches.filter((b) => b && b !== ctx.branch);
+    // M4: exclude devBranch too — an implementer's self-reported
+    // worktreeBranch is free-form text the schema does not constrain, and
+    // devBranch is normally an ancestor of ctx.branch, so without this a
+    // stray report of devBranch here would pass the ancestor check below and
+    // could trigger `git branch -d` on the shared dev branch itself.
+    const side = ctx.worktreeBranches.filter((b) => b && b !== ctx.branch && b !== devBranch);
     const owned = ctx.ownedWorktrees.slice();
     const r = await mechanical(ctx, "cleanup-worktrees", phaseName,
       "(" + tag + ", head " + (ctx.headSha || "none") + ")\n" +
