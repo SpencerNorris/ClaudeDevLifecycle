@@ -154,7 +154,7 @@ export const HAPPY = {
 
 export const HAPPY_LABELS = [
   "design-review",
-  "implement-tdd", "reconcile-branch", "pin-run-worktree",
+  "implement-tdd", "detach-worktrees", "reconcile-branch", "pin-run-worktree",
   "gates",
   ["adversarial-reviewer", "correctness-reviewer"],
   "validate-and-dod",
