@@ -184,6 +184,14 @@ test("cache-collision guard: a cacheable entry does not trip the collision check
   );
 });
 
+test("single: design review runs first and its constraints reach the implementer", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  assert.equal(run.labels[0], "design-review");
+  const impl = run.prompts.find((p) => p.label === "implement-tdd");
+  assert.match(impl.prompt, /provenance writes use ON CONFLICT/);
+  assert.match(impl.prompt, /CLAUDE\.md/);
+});
+
 test("single: the first implement is not preceded by a detach (no branch exists yet); reconcile detaches its own holder, then pins", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
   const i = run.labels.indexOf("implement-tdd");
@@ -222,15 +230,7 @@ test("single: a diverged reconcile cleans up, then escalates; no later stage run
   assert.ok(!run.labels.includes("gates"));
 });
 
-// TODO(Task 4): "design-review" is not dispatched by the script until Task 4
-// makes it run.labels[0] (task-4-brief.md). Until then this scenario's
-// override is inert and the run instead reaches "validate-and-dod", where the
-// pre-existing R.dodPass "cases" field (forward-referenced for Task 5,
-// out of scope here) trips the harness's own additionalProperties check
-// before the workflow can reach a real terminal — so run.error is an
-// AssertionError from the test stub, never EscalationStop. Un-mark once
-// Task 4 lands.
-test("single: a design-stage pause does not run cleanup (the run owns nothing yet)", { todo: true }, async () => {
+test("single: a design-stage pause does not run cleanup (the run owns nothing yet)", async () => {
   const scenario = { ...HAPPY,
     "design-review": { ...R.design, blocker: "ambiguity", blockerDetail: "no acceptance criteria" },
     "pause-for-human": "posted",

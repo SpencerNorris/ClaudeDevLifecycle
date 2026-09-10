@@ -54,6 +54,11 @@ export const meta = {
     "Autonomous single-feature dev cycle (D2 as a workflow): TDD implement -> validate + DoD report -> adversarial review -> push + PR -> CI, with every retry loop capped at K=3 and escalation to the feature GitHub issue on exhaustion.",
   phases: [
     {
+      title: "Design",
+      detail:
+        "One Opus pass over the issue, plan and the repo's stated contracts; returns the constraints the implementer and reviewers must honour.",
+    },
+    {
       title: "Implement",
       detail:
         "Create the non-main branch and do TDD: write a failing test, implement to green, refactor. Plan is pre-approved (from args) or drafted here for non-trivial surfaces.",
@@ -223,12 +228,31 @@ const IMPLEMENT_SCHEMA = {
   },
 };
 
+// The design reviewer's result (spec D2). Constraints are the codebase's own
+// contracts that the change must honour; each names its source so the
+// implementer and the reviewers can check it.
+const DESIGN_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["constraints", "risks", "blocker"],
+  properties: {
+    constraints: { type: "array", items: { type: "object", additionalProperties: false, required: ["text", "source"],
+      properties: { text: { type: "string", minLength: 1 }, source: { type: "string", minLength: 1 } } } },
+    risks: { type: "array", items: { type: "string" } },
+    ...BLOCKER_PROPS,
+  },
+};
+
 // Shared by every implement prompt (spec D1).
 const HEAD_SHA_CLAUSE =
   "BRANCH CONTRACT: work on the named branch. If git refuses to check it out because another worktree holds it, " +
   "commit on your worktree's own branch instead — never fail for this, never create any other branch — and report " +
   "that branch as `worktreeBranch`. In every case return `headSha` = the full 40-hex commit your work ends at " +
   "(`git rev-parse HEAD` after your last commit) and `branch` = the name you were given.\n";
+
+function constraintsClause(ctx) {
+  if (!ctx.constraints.length) return "";
+  return "DESIGN CONSTRAINTS (from the design review; each cites its source — honour every one, and say so if one cannot be honoured):\n" +
+    ctx.constraints.map((c, i) => "  C" + (i + 1) + ". " + c.text + "  [" + c.source + "]").join("\n") + "\n";
+}
 
 // ---------------------------------------------------------------------------
 // REVIEW PANEL. The adversarial + correctness reviewers ALWAYS run; security and
@@ -693,6 +717,28 @@ const ctx = {
 };
 
 // ---------------------------------------------------------------------------
+// PHASE 0 — DESIGN REVIEW (spec D2). One Opus pass over the issue, the plan
+// and the repository's stated contracts, before any code. Its constraints
+// travel into the implement prompt and every reviewer prompt.
+// ---------------------------------------------------------------------------
+phase("Design");
+const design = requireAgentResult(await agent(
+  "AUTONOMOUS single-feature run, DESIGN REVIEW (spec D2). Read the linked issue in full, the plan below if any, the repository's CLAUDE.md, " +
+    "and the modules the issue and plan name. Return `constraints`: the codebase's existing contracts, invariants and patterns this change must honour " +
+    "(write paths, locking, conflict handling on inserts, queue/drain contracts, naming, ontology rules), each with a `source` (file path or doc section). " +
+    "Return `risks`: places where the plan is likely to violate one. Do not implement anything, do not write files. " +
+    "If the issue is too ambiguous to derive acceptance criteria, return blocker='ambiguity' with blockerDetail.\n\n" +
+    "Feature: " + featureDescription + "\nLinked issue: " + issueRef + "\nPlan:\n" + (preApprovedPlan || "(none)"),
+  { label: "design-review", phase: "Design", model: "opus", schema: DESIGN_SCHEMA }
+), "DESIGN");
+if (isExternalBlocker(design.blocker)) {
+  ctx.failureContext = design.blockerDetail || ("blocker=" + design.blocker);
+  await pauseForHuman("Design", design.blocker, ctx);
+}
+ctx.constraints = design.constraints;
+log("Design review: " + ctx.constraints.length + " constraints, " + design.risks.length + " risks.");
+
+// ---------------------------------------------------------------------------
 // PHASE 1+2+3 — Implement / Validate / Review.
 //
 // These three phases form ONE capped outer loop: a reviewer reject and a
@@ -722,6 +768,7 @@ let implementResult = await agent(
     "Then do TDD: write a FAILING test that pins the desired behavior, implement until it is green, then refactor. " +
     "Fix in-scope bugs in this change (no-shed); file only genuinely orthogonal bugs as cross-linked GH issues.\n\n" +
     planClause +
+    constraintsClause(ctx) +
     (existingBranch
       ? "A branch for this feature ALREADY EXISTS: '" + existingBranch + "'. Check it out in your worktree and CONTINUE from its tip — never create a fresh branch, never redo work already committed there.\n"
       : "") +
