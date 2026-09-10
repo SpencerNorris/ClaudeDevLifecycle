@@ -1089,6 +1089,8 @@ git commit -m "feat(workflow): gates, then review, then smoke; delta review over
 
 ### Task 7: Ship names the commit; PR scrub; CI fix pinned; quota short-circuit; cleanup at every exit (D6, D7 part 3, D8)
 
+> **As built:** `checkQuota(ctx)`; the CI fix dispatch is `detachWorktrees(ctx, "CI", 100 + fixAttempt, "before-implement")`, the fix agent, then `reconcileBranch(...)`, so the labels after `fix-ci-and-repush` are `detach-worktrees`, `reconcile-branch` (the test asserts reconcile is reached with only detach steps intervening). No cleanup between ship and CI; cleanup runs inside `finishWithoutCi` and before the CI-green return.
+
 **Files:**
 - Modify: `claude-home/workflows/single-feature-run.js` — the ship prompt; after `push-and-open-pr`; the CI phase (`fix-ci-and-repush`, both returns)
 - Test: `tests/workflow-flow.test.mjs`
