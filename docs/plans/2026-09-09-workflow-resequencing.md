@@ -257,7 +257,7 @@ export const HAPPY = {
 
 export const HAPPY_LABELS = [
   "design-review",
-  "implement-tdd", "reconcile-branch", "pin-run-worktree",
+  "implement-tdd", "detach-worktrees", "reconcile-branch", "pin-run-worktree",
   "gates",
   ["adversarial-reviewer", "correctness-reviewer"],
   "validate-and-dod",
@@ -338,7 +338,7 @@ In the first implement prompt (label `implement-tdd`) insert `HEAD_SHA_CLAUSE +`
 ```js
 const ctx = {
   issue: issueRef,
-  branch: devBranch,        // becomes the feature branch after the first implement result
+  branch: existingBranch || devBranch, // the run's branch: the one it was given, else the dev branch until the first implement names one
   headSha: null,
   runWorktree: null,        // the run-owned checkout every later stage works in (spec D1)
   ownedWorktrees: [],       // paths this run created or detached — the only ones cleanup may remove
@@ -395,13 +395,14 @@ git commit -m "feat(workflow): implement results carry headSha, worktreeBranch a
 - [ ] **Step 1: Failing tests**
 
 ```js
-test("single: the first implement is not preceded by a detach (no branch exists yet) and is followed by reconcile and pin", async () => {
+test("single: a fresh run's first implement has no detach before it; a detach, reconcile and pin follow it", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
   const i = run.labels.indexOf("implement-tdd");
   assert.ok(i > -1, "implement-tdd never dispatched: " + (run.error && run.error.message));
-  assert.ok(!run.labels.slice(0, i).includes("detach-worktrees"), "no detach before the first implement");
-  assert.equal(run.labels[i + 1], "reconcile-branch");
-  assert.equal(run.labels[i + 2], "pin-run-worktree");
+  assert.ok(!run.labels.slice(0, i).includes("detach-worktrees"), "no detach before the first implement of a fresh run");
+  assert.equal(run.labels[i + 1], "detach-worktrees", "the implementer's worktree holds the branch; reconcile frees it first");
+  assert.equal(run.labels[i + 2], "reconcile-branch");
+  assert.equal(run.labels[i + 3], "pin-run-worktree");
   const pin = run.prompts.find((p) => p.label === "pin-run-worktree");
   assert.match(pin.prompt, new RegExp(SHA_A));
   assert.match(pin.prompt, /pass 0/);
@@ -474,9 +475,10 @@ const PIN_SCHEMA = { type: "object", additionalProperties: false, required: ["ok
 const CLEANUP_SCHEMA = { type: "object", additionalProperties: false, required: ["ok", "removed"],
   properties: { ok: { type: "boolean" }, removed: { type: "array", items: { type: "string" } }, detail: { type: "string" } } };
 
-/** The run owns a branch only after the first implement result (spec D1). */
+/** The run owns a branch when it works on a named feature branch: the one it
+ * was given (existingBranch) or the one its first implement created (spec D1). */
 function runOwnsBranch(ctx) {
-  return !!ctx.headSha && ctx.branch !== devBranch;
+  return ctx.branch !== devBranch;
 }
 
 /** Detach every worktree that holds ctx.branch so the next implementer can
@@ -484,7 +486,7 @@ function runOwnsBranch(ctx) {
 async function detachWorktrees(ctx, phaseName, pass) {
   if (!runOwnsBranch(ctx)) return { ok: true, detached: [] };
   const r = await mechanical(ctx, "detach-worktrees", phaseName,
-    "(pass " + pass + ", head " + ctx.headSha + ")\n" +
+    "(pass " + pass + ", head " + (ctx.headSha || "none") + ")\n" +
       "1. `git worktree list --porcelain` — for every worktree whose `branch` line is `refs/heads/" + ctx.branch + "` " +
       "and whose path is NOT the main working tree, run `git -C <path> checkout --detach`.\n" +
       "2. Return ok=true and `detached` = the absolute paths you detached (empty if none).",
@@ -498,16 +500,16 @@ async function detachWorktrees(ctx, phaseName, pass) {
  * dirty holder cannot block the ref update. Sets ctx.headSha. */
 async function reconcileBranch(ctx, implementResult, phaseName, pass) {
   const sha = implementResult.headSha;
+  await detachWorktrees(ctx, phaseName, pass); // frees the holder and records it as run-owned
   const r = await mechanical(ctx, "reconcile-branch", phaseName,
     "(pass " + pass + ")\n" +
       "1. `git merge-base --is-ancestor " + ctx.branch + " " + sha + "`; if the exit code is non-zero return ok=false, sha=`" + sha + "`, detail='" + ctx.branch + " is not an ancestor of " + sha + "'.\n" +
-      "2. `git worktree list --porcelain`; for every worktree (not the main working tree) with `branch refs/heads/" + ctx.branch + "`, run `git -C <path> checkout --detach`.\n" +
-      "3. `git update-ref refs/heads/" + ctx.branch + " " + sha + "`.\n" +
-      "4. `git rev-parse " + ctx.branch + "` must print `" + sha + "`. Return ok=true, sha=that value, detail='fast-forwarded'.",
+      "2. `git update-ref refs/heads/" + ctx.branch + " " + sha + "`.\n" +
+      "3. `git rev-parse " + ctx.branch + "` must print `" + sha + "`. Return ok=true, sha=that value, detail='fast-forwarded'.",
     RECONCILE_SCHEMA);
   if (!r.ok || r.sha !== sha) {
     ctx.failureContext = "Branch reconciliation failed: " + r.detail;
-    await escalate("Implement", 1, ctx);
+    await escalate(phaseName, 1, ctx);
   }
   ctx.headSha = sha;
   return sha;
@@ -520,7 +522,7 @@ async function pinRunWorktree(ctx, phaseName, pass) {
   const path = ".claude/worktrees/run-" + slug;
   const r = await mechanical(ctx, "pin-run-worktree", phaseName,
     "(pass " + pass + ")\n" +
-      "1. If `" + path + "` exists and is a worktree (`git worktree list --porcelain` lists it): `git -C " + path + " status --porcelain`; if non-empty return ok=false with the output as detail; else `git -C " + path + " checkout --detach " + ctx.headSha + "`.\n" +
+      "1. If `" + path + "` exists and is a worktree (`git worktree list --porcelain` lists it): `git -C " + path + " status --porcelain --untracked-files=no`; if non-empty return ok=false with the output as detail; else `git -C " + path + " checkout --detach " + ctx.headSha + "`.\n" +
       "2. Otherwise: `git worktree add --detach " + path + " " + ctx.headSha + "`.\n" +
       "3. `git -C " + path + " rev-parse HEAD` must print `" + ctx.headSha + "`. Return ok=true, path=the absolute path of " + path + ", sha=that value.",
     PIN_SCHEMA);
@@ -541,7 +543,7 @@ async function cleanupWorktrees(ctx, phaseName, tag) {
   const side = ctx.worktreeBranches.filter((b) => b && b !== ctx.branch);
   const owned = ctx.ownedWorktrees.slice();
   const r = await mechanical(ctx, "cleanup-worktrees", phaseName,
-    "(" + tag + ", head " + ctx.headSha + ")\n" +
+    "(" + tag + ", head " + (ctx.headSha || "none") + ")\n" +
       "1. `git worktree list --porcelain`. For every worktree that is NOT the main working tree and is EITHER one of these paths: " + (owned.length ? owned.join(", ") : "(none)") +
       " OR has `branch refs/heads/" + ctx.branch + "`" + (side.length ? " OR one of: " + side.map((b) => "refs/heads/" + b).join(", ") : "") +
       ": run `git worktree remove <path>` (no --force). If git refuses (dirty tree), leave it and list the path in `detail`.\n" +
