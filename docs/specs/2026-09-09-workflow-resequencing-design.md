@@ -72,4 +72,4 @@ The per-run ledger (tokens and minutes per stage, waste accounting) is a separat
 - A real run on a small issue shows: one full review round, one full smoke, every later validate incremental, no worktree or side branch left behind, no session link in any commit or PR body, and a clean `ciSkipped` finish while the quota is exhausted.
 
 ## Attribution verification (Task 1)
-(to be filled in by Task 1 of the plan)
+Pending. Needs the maintainer's own `~/.claude/settings.json` and fresh sessions (one subagent commit, one workflow-agent commit, one PR body). Record the result here; if a session link still appears, D7 reduces to the post-ship scrub and the leak is reported upstream as a Claude Code defect.
