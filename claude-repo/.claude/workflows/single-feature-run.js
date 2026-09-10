@@ -203,8 +203,10 @@ const DOD_SCHEMA = {
   additionalProperties: false,
   required: ["gatesPass", "report", "tests", "smokeAllPass", "cases", "blocker"],
   properties: {
-    // True only when unit+integration+regression+lint+type all pass AND the
-    // smoke test (happy + named edges + failure modes) all pass.
+    // True only when the integration + regression suites at this commit pass
+    // (unit, lint and type-check are the separate Gates stage — GATES_SCHEMA
+    // — and are already green before Validate ever runs). `smokeAllPass`
+    // covers the smoke test (happy path + named edges + failure modes).
     gatesPass: { type: "boolean" },
     smokeAllPass: { type: "boolean" },
     tests: {
@@ -395,9 +397,22 @@ async function runReviewPanel(runLabel, ctx, base, evidence, mode) {
   // Update each seat's ledger: new findings are opened, resolved ones are closed.
   for (const r of valid) {
     const ledger = ctx.findings[r.agentType] || (ctx.findings[r.agentType] = {});
-    for (const f of r.v.findings || []) if (f.id) ledger[f.id] = { ...f, status: "open" };
+    for (const f of r.v.findings || []) {
+      // A finding without an id is still real — default one rather than drop it.
+      const id = f.id || ("F" + (Object.keys(ledger).length + 1));
+      ledger[id] = { ...f, id, status: "open" };
+    }
     for (const x of r.v.resolved || []) if (ledger[x.id]) ledger[x.id].status = x.status;
-    for (const d of r.v.deferralVerdicts || []) if (!d.accepted) ledger["deferral-" + d.id] = { id: d.id, severity: "blocking", category: "no-shed", detail: "deferral rejected: " + (d.note || ""), status: "open" };
+    for (const d of r.v.deferralVerdicts || []) {
+      // Store and render the SAME id ("deferral-" + d.id) so a later `resolved`
+      // naming that rendered id actually matches this ledger entry.
+      if (!d.accepted) ledger["deferral-" + d.id] = { id: "deferral-" + d.id, severity: "blocking", category: "no-shed", detail: "deferral rejected: " + (d.note || ""), status: "open" };
+      const claim = ctx.minorsDeferred.find((m) => m.id === d.id);
+      if (claim) {
+        ctx.minorsDeferred = ctx.minorsDeferred.filter((m) => m.id !== d.id);
+        if (d.accepted) ctx.acceptedDeferrals.push({ id: claim.id, reason: claim.reason, note: d.note });
+      }
+    }
   }
   const rejected = valid.filter((r) => r.v.verdict === "reject" || (r.v.deferralVerdicts || []).some((d) => !d.accepted));
   if (rejected.length === 0) {
@@ -724,11 +739,15 @@ async function reimplement(label, why, context, pass) {
       "Branch: " + ctx.branch + " at " + ctx.headSha + "\n" + context,
     { label, phase: "Implement", model: "sonnet", schema: IMPLEMENT_SCHEMA, isolation: "worktree" }
   ), "IMPLEMENT");
+  // Record worktreeBranch BEFORE the blocker check: pauseForHuman() cleans up
+  // worktrees immediately, and a blocked-but-committed implementer's side
+  // branch must be registered first or cleanup never sees it (the
+  // first-implement site already does this order).
+  if (r.worktreeBranch) ctx.worktreeBranches.push(r.worktreeBranch);
   if (isExternalBlocker(r.blocker)) {
     ctx.failureContext = r.blockerDetail || ("blocker=" + r.blocker);
     await pauseForHuman("Implement", r.blocker, ctx);
   }
-  if (r.worktreeBranch) ctx.worktreeBranches.push(r.worktreeBranch);
   ctx.minorsDeferred = ctx.minorsDeferred.concat(r.minorsDeferred || []);
   if (r.headSha === before) {
     // Nothing was committed: the next pass would replay cached gate results forever.
@@ -760,6 +779,7 @@ async function runValidate(ctx, pass) {
       "REPORT EVERY SMOKE CASE in `cases` with a stable id (AC1, AC2, … in the issue's order, then E1… for derived edges and F1… for failure modes), `pass`, a one-line `detail`, and the source files the case exercises in `files`.\n" +
       "Set blocker='code' when a case fails because of the change; 'ambiguity' when acceptance criteria cannot be derived; a preflight kind when a resource failed mid-smoke; 'none' when everything passed.\n" +
       "Produce the DoD report with the exact structure from reference/definition-of-done.md (## Changes / ## Tests / ## Smoke test transcript / ## Docs updated / ## Follow-ups). Under ## Smoke test transcript render the re-run cases as a table and, if any, a separate list 'Carried forward (not re-run this pass)'. Under ## Follow-ups list every accepted deferral from the review panel.\n" +
+      "ACCEPTED DEFERRALS (list each under ## Follow-ups): " + (ctx.acceptedDeferrals.length ? ctx.acceptedDeferrals.map((d) => d.id + ": " + d.reason).join("; ") : "none") + "\n" +
       "gatesPass is true ONLY if every suite passed; smokeAllPass ONLY if every case in `cases` has pass=true.\n\n" +
       "Feature: " + featureDescription + "\nLinked issue: " + issueRef,
     { label: "validate-and-dod", phase: "Validate", model: "sonnet", schema: DOD_SCHEMA }
@@ -824,11 +844,13 @@ const ctx = {
   ownedWorktrees: [],       // paths this run created or detached — the only ones cleanup may remove
   worktreeBranches: [],     // side branches implementers reported
   minorsDeferred: [],
+  acceptedDeferrals: [],    // deferral claims a review panel accepted ({ id, reason, note })
   constraints: [],
   gateSummary: "",
   failedCases: [],
   lastSmokeSha: null,
   prevReviewSha: null,
+  lastCritique: null,       // the standing critique when prevReviewSha === headSha (no new commit landed)
   findings: {},             // per reviewer seat: id -> finding, the delta-review ledger (spec D3)
   reviewVerdictSection: "",
   prUrl: null,
@@ -886,7 +908,7 @@ const planClause = preApprovedPlan
 
 await detachWorktrees(ctx, "Implement", 0, "before-implement");
 
-let implementResult = await agent(
+const implementResult = await agent(
   "AUTONOMOUS single-feature run, IMPLEMENT phase (master-design-doc.md §5, D2).\n" +
     "Create a NON-MAIN branch off '" +
     devBranch +
@@ -954,18 +976,32 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
   // ---- REVIEW (spec D2/D3): before the smoke; delta mode whenever a prior round exists ----
   if (reviewPassedAt !== ctx.headSha) {
     phase("Review");
+    if (ctx.prevReviewSha === ctx.headSha && ctx.lastCritique) {
+      // The standing critique is the verdict: nothing new to review — the last
+      // reimplement produced no new commit, so re-dispatching the panel here
+      // would be a byte-identical prompt (cache collision) reviewing a
+      // degenerate `git diff SHA..SHA`. The prior rejection still stands.
+      reviewRejects++;
+      ctx.failureContext = "Review panel's standing rejection at " + ctx.headSha + " (reject " + reviewRejects + " of " + K + ", pass " + pass + "):\n" + ctx.lastCritique;
+      if (reviewRejects === K) await escalate("Review", reviewRejects, ctx);
+      if (ctx.lastReimplementNote) { ctx.failureContext += "\n" + ctx.lastReimplementNote; ctx.lastReimplementNote = null; }
+      await reimplement("reimplement-after-review", "back to IMPLEMENT after a REVIEW reject", ctx.failureContext, pass);
+      continue;
+    }
     const mode = ctx.prevReviewSha ? { prevSha: ctx.prevReviewSha } : "full";
-    const review = await runReviewPanel("AUTONOMOUS single-feature run,", ctx, devBranch, "GATE RESULTS at " + ctx.headSha + ": " + ctx.gateSummary, mode);
+    const review = await runReviewPanel("AUTONOMOUS single-feature run,", ctx, devBranch, "GATE RESULTS at " + ctx.headSha + " (pass " + pass + "): " + ctx.gateSummary, mode);
     if (review.incomplete) { ctx.failureContext = review.critique; await pauseForHuman("Review", "usage_limit", ctx); }
     ctx.prevReviewSha = ctx.headSha; // any later round is a delta over this commit
     if (!review.pass) {
       reviewRejects++;
       ctx.failureContext = "Review panel rejected (reject " + reviewRejects + " of " + K + ", pass " + pass + ", by: " + review.rejectedBy + "):\n" + review.critique;
+      ctx.lastCritique = review.critique;
       if (reviewRejects === K) await escalate("Review", reviewRejects, ctx);
       if (ctx.lastReimplementNote) { ctx.failureContext += "\n" + ctx.lastReimplementNote; ctx.lastReimplementNote = null; }
-      await reimplement("reimplement-after-review", "back to IMPLEMENT after a REVIEW reject", "Reviewer critique:\n" + review.critique, pass);
+      await reimplement("reimplement-after-review", "back to IMPLEMENT after a REVIEW reject", ctx.failureContext, pass);
       continue;
     }
+    ctx.lastCritique = null;
     reviewPassedAt = ctx.headSha;
     ctx.reviewVerdictSection = review.verdictSection;
   }
@@ -979,7 +1015,7 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
     validateFailures++;
     ctx.failedCases = (dod.cases || []).filter((c) => !c.pass);
     ctx.lastSmokeSha = ctx.headSha;
-    ctx.failureContext = "Smoke failed (code failure " + validateFailures + " of " + K + ", pass " + pass + "): " + (dod.failureContext || ctx.failedCases.map((c) => c.id + " " + c.name).join(", "));
+    ctx.failureContext = "Smoke failed (code failure " + validateFailures + " of " + K + ", pass " + pass + "): " + (dod.failureContext || ctx.failedCases.map((c) => c.id + " " + c.name).join(", ") || "integration or regression suites did not pass");
     if (validateFailures === K) await escalate("Validate", validateFailures, ctx);
     if (ctx.lastReimplementNote) { ctx.failureContext += "\n" + ctx.lastReimplementNote; ctx.lastReimplementNote = null; }
     await reimplement("reimplement-after-validate", "back to IMPLEMENT after a SMOKE failure", ctx.failureContext, pass);

@@ -341,6 +341,50 @@ test("single: a reimplement that produces no new commit is a code failure, not a
   assert.match(re[1].prompt, /produced no new commit/);
 });
 
+test("single: a reimplement that produces no new commit on the review path is a standing rejection, not a re-review", async () => {
+  const reject = { verdict: "reject", summary: "bad", findings: [{ id: "F1", severity: "blocking", category: "correctness", detail: "no ON CONFLICT", location: "src/x.py:10" }] };
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0 ? reject : R.reviewPass),
+    "reimplement-after-review": (p, o, n) => (n === 0 ? R.implement /* same sha as before: nothing committed */ : { ...R.implement, headSha: SHA_B }),
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const reimplIdx = run.labels.reduce((acc, l, i) => (l === "reimplement-after-review" ? acc.concat(i) : acc), []);
+  assert.equal(reimplIdx.length, 2, "reimplement-after-review is dispatched twice");
+  const advBeforeSecond = run.labels.slice(0, reimplIdx[1]).filter((l) => l === "adversarial-reviewer").length;
+  assert.equal(advBeforeSecond, 1, "the panel was dispatched exactly once at SHA_A; it is never re-run on a commit it already rejected");
+  const re = run.prompts.filter((p) => p.label === "reimplement-after-review");
+  assert.match(re[1].prompt, /standing rejection/);
+  assert.match(re[1].prompt, /produced no new commit/);
+  const adv = run.prompts.filter((p) => p.label === "adversarial-reviewer");
+  assert.equal(adv.length, 2, "the panel runs again once a new commit lands");
+  assert.match(adv[1].prompt, /DELTA REVIEW/, "the post-fix round is a delta review");
+  assert.equal(run.labels.filter((x) => x === "validate-and-dod").length, 1, "one smoke");
+  assert.equal(run.result.prUrl, R.ship.prUrl, "ships");
+});
+
+test("single: a deferral a seat rejects becomes a closable finding under its own id", async () => {
+  const scenario = { ...HAPPY,
+    "implement-tdd": { ...R.implement, minorsDeferred: [{ id: "F9", reason: "out of scope: unrelated module" }] },
+    "adversarial-reviewer": (p, o, n) => {
+      if (n === 0) return { ...R.reviewPass, deferralVerdicts: [{ id: "F9", accepted: false, note: "not orthogonal" }] };
+      if (n === 1) return { ...R.reviewPass, resolved: [{ id: "deferral-F9", status: "addressed", note: "fixed in-scope" }] };
+      return R.reviewPass;
+    },
+    "correctness-reviewer": (p, o, n) => (n === 1
+      ? { verdict: "reject", summary: "separate issue", findings: [{ id: "C1", severity: "blocking", category: "correctness", detail: "off-by-one", location: "src/y.py:5" }] }
+      : R.reviewPass),
+    "reimplement-after-review": (p, o, n) => ({ ...R.implement, headSha: n === 0 ? SHA_B : SHA_C }),
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const adv = run.prompts.filter((p) => p.label === "adversarial-reviewer");
+  assert.equal(adv.length, 3);
+  assert.match(adv[1].prompt, /deferral-F9 \[blocking\] no-shed/, "the rejected deferral renders under its own ledger id");
+  assert.doesNotMatch(adv[2].prompt, /deferral-F9/, "resolved: [{ id: 'deferral-F9', ... }] closed it");
+  assert.equal(run.result.prUrl, R.ship.prUrl);
+});
+
 test("cache-collision guard: a genuine repeated (label, prompt) throws unless cacheable", async () => {
   // Neither workflow script repeats a verbatim prompt for the same label on
   // the happy path, so drive the stub directly with a synthetic script body
