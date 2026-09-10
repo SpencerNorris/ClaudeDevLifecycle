@@ -175,7 +175,7 @@ const VERDICT_SCHEMA = {
 const DOD_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["gatesPass", "report", "tests", "smokeAllPass", "blocker"],
+  required: ["gatesPass", "report", "tests", "smokeAllPass", "cases", "blocker"],
   properties: {
     // True only when unit+integration+regression+lint+type all pass AND the
     // smoke test (happy + named edges + failure modes) all pass.
@@ -193,6 +193,15 @@ const DOD_SCHEMA = {
         typecheck: { type: "string" },
       },
     },
+    // Per-case smoke results (spec D4). Ids are stable across attempts so a
+    // failed case can be re-run by name; `carried` marks a case NOT re-run in
+    // an incremental smoke (its `pass` is the last real result).
+    cases: {
+      type: "array", minItems: 1,
+      items: { type: "object", additionalProperties: false, required: ["id", "name", "pass"],
+        properties: { id: { type: "string", minLength: 1 }, name: { type: "string", minLength: 1 }, pass: { type: "boolean" },
+          carried: { type: "boolean" }, detail: { type: "string" }, files: { type: "array", items: { type: "string" } } } },
+    },
     // Reason a gate failed, fed back to the implementer as retry context.
     failureContext: { type: "string" },
     // The full DoD-report markdown (Changes / Tests / Smoke transcript / Docs /
@@ -201,6 +210,32 @@ const DOD_SCHEMA = {
     ...BLOCKER_PROPS,
   },
 };
+
+// The gates result (spec D2): the deterministic checks, run in the run
+// worktree at the pinned commit, before any reviewer or smoke spends money on
+// a red build. Not a mechanical step: which commands to run is repository
+// knowledge, so this is a low-effort agent, and args.gateCommands can pin them.
+const GATES_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["pass", "unit", "lint", "typecheck", "blocker"],
+  properties: { pass: { type: "boolean" }, unit: { type: "string" }, lint: { type: "string" }, typecheck: { type: "string" }, failureContext: { type: "string" }, ...BLOCKER_PROPS },
+};
+
+async function runGates(ctx, pass) {
+  const how = gateCommands
+    ? "Run exactly these three commands: unit: `" + gateCommands.unit + "`; lint: `" + gateCommands.lint + "`; typecheck: `" + gateCommands.typecheck + "`."
+    : "Run the repository's unit tests, lint and type-check exactly as its CLAUDE.md / README document them (no smoke, no integration services). If a language runtime or dependency install is needed in this worktree, do the documented install first.";
+  const r = await agent(
+    "AUTONOMOUS single-feature run, GATES (spec D2) — pass " + pass + ". Work ONLY in `" + ctx.runWorktree + "`, which is checked out at " + ctx.headSha + " (verify with `git rev-parse HEAD`; if it differs, return blocker='infra' with blockerDetail). " +
+      how + " Return pass=true only if all three passed; put each command's one-line summary in `unit`, `lint`, `typecheck`; on failure put the failing output (trimmed) in `failureContext`. " +
+      "If a tool is missing or a service is down that a unit test needs, return blocker='infra' with blockerDetail. Do not modify any file.",
+    { label: "gates", phase: "Gates", model: "sonnet", effort: "low", schema: GATES_SCHEMA }
+  );
+  if (!r) {
+    ctx.failureContext = "gates agent died without returning a result.";
+    await pauseForHuman("Gates", "usage_limit", ctx);
+  }
+  return r;
+}
 
 // The implementer's structured result. `headSha` is the commit the work ends
 // at — the workflow pins every later stage to it (spec D1). `branch` is the
@@ -658,6 +693,7 @@ const featureDescription = RUN_ARGS.featureDescription || RUN_ARGS.feature || RU
 const devBranch = RUN_ARGS.devBranch || RUN_ARGS.branch;
 const issueRef = RUN_ARGS.issue || RUN_ARGS.issueRef; // durable escalation target (§4)
 const preApprovedPlan = RUN_ARGS.plan || RUN_ARGS.preApprovedPlan || null;
+const gateCommands = RUN_ARGS.gateCommands && typeof RUN_ARGS.gateCommands === "object" ? RUN_ARGS.gateCommands : null;
 
 // Resume support (added 2026-09-03): the harness caches a completed agent()
 // result by (prompt, opts), so a resumed run would replay a failed validate
@@ -797,6 +833,15 @@ if (implementResult.worktreeBranch) ctx.worktreeBranches.push(implementResult.wo
 ctx.minorsDeferred = ctx.minorsDeferred.concat(implementResult.minorsDeferred || []);
 await reconcileBranch(ctx, implementResult, "Implement", 0);
 await pinRunWorktree(ctx, "Implement", 0);
+// TEMPORARY (Task 5): dispatched once here so the helper and its schema are
+// exercised before the loop rewrite; Task 6 moves this call into the
+// validate/review loop and wires the failure branch.
+const g = await runGates(ctx, 1);
+if (isExternalBlocker(g.blocker)) {
+  ctx.failureContext = g.blockerDetail || ("blocker=" + g.blocker);
+  await pauseForHuman("Gates", g.blocker, ctx);
+}
+ctx.gateSummary = "unit: " + g.unit + "; lint: " + g.lint + "; typecheck: " + g.typecheck;
 if (isExternalBlocker(implementResult.blocker)) {
   ctx.failureContext = implementResult.blockerDetail || ("blocker=" + implementResult.blocker);
   await pauseForHuman("Implement", implementResult.blocker, ctx);
@@ -834,8 +879,9 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
       (resumeNonce ? ", resume " + resumeNonce : "") +
       " (master-design-doc.md §5, D2; reference/definition-of-done.md).\n" +
       "STEP 0 — PREFLIGHT, before running a single test. List every external resource the issue's acceptance criteria depend on and verify each with the cheapest possible check: an LLM key via ONE minimal call through the app's configured provider; the Docker daemon (`docker info` answers within 15 s) and the target services' health endpoints; at least 10 GB free on the volume holding Docker's data; GitHub reachability if the smoke needs it. If any check fails, STOP: return gatesPass=false, smokeAllPass=false, blocker = the matching kind ('infra' | 'credentials' | 'billing' | 'usage_limit') and blockerDetail = the exact error text. Never retry a preflight, never attempt host recovery, never enter or read credentials.\n" +
-      "STEP 1 — GATES on branch '" + ctx.branch + "': unit + integration + regression + lint + type-check.\n" +
+      "STEP 1 — integration + regression suites at this commit. Unit, lint and type-check already passed (" + ctx.gateSummary + "); copy those into `tests`.\n" +
       "STEP 2 — SMOKE against the running system: the happy path, EVERY named edge case in the feature/issue/spec (or, if none are stated, derive them explicitly and list them), and the most plausible failure modes for the surface touched. If the stack is in the dev shape (bind-mounted source), do NOT rebuild images for code changes — rebuild only when dependencies, a Dockerfile, or the nginx template changed.\n" +
+      "REPORT EVERY SMOKE CASE in `cases` with a stable id (AC1, AC2, … in the issue's order, then E1… for derived edges and F1… for failure modes), `pass`, a one-line `detail`, and the source files the case exercises in `files`.\n" +
       "Set blocker='code' when a gate or smoke case fails because of the change; 'ambiguity' when the issue/spec is contradictory or under-specified and acceptance criteria cannot be derived; a preflight kind when an external resource failed mid-smoke; 'none' when everything passed.\n" +
       "Produce a DoD report with the exact structure from reference/definition-of-done.md " +
       "(## Changes / ## Tests / ## Smoke test transcript / ## Docs updated / ## Follow-ups), including the real transcript. " +

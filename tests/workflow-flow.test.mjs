@@ -248,6 +248,24 @@ test("single: a dead mechanical agent pauses for a human instead of throwing raw
   assert.ok(run.labels.includes("pause-for-human"));
 });
 
+test("single: gates helper runs in the run worktree at headSha with the pass number", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  const g = run.prompts.find((p) => p.label === "gates");
+  assert.ok(g, "gates never dispatched: " + (run.error && run.error.message));
+  assert.match(g.prompt, new RegExp(SHA_A));
+  assert.match(g.prompt, /run-feat-dark-mode/);
+  assert.match(g.prompt, /pass 1/);
+});
+
+test("single: DoD schema requires per-case results with a carried flag", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  const v = run.prompts.find((p) => p.label === "validate-and-dod");
+  assert.ok(v, "validate never dispatched: " + (run.error && run.error.message));
+  assert.ok(v.opts.schema.required.includes("cases"));
+  assert.equal(v.opts.schema.properties.cases.minItems, 1);
+  assert.equal(v.opts.schema.properties.cases.items.properties.carried.type, "boolean");
+});
+
 test("cache-collision guard: a genuine repeated (label, prompt) throws unless cacheable", async () => {
   // Neither workflow script repeats a verbatim prompt for the same label on
   // the happy path, so drive the stub directly with a synthetic script body
