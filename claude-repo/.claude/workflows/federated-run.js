@@ -665,7 +665,7 @@ async function pauseForHuman(stage, blocker, ctx) {
   // its own pause comment for the original failure either way — there is no
   // expensive root-cause diagnosis step to double up on (that is what makes
   // batchEscalate()'s duplicate worth rethrowing to avoid).
-  try { await cleanupBatchWorktrees(ctx, stage, "pause " + stage); } catch (e) { log("cleanup before batch pause failed: " + e.message); }
+  try { await cleanupBatchWorktrees(ctx, stage, "pause " + stage, ctx.branch); } catch (e) { log("cleanup before batch pause failed: " + e.message); }
   log(
     "PAUSED FOR HUMAN (batch) at stage '" + stage + "': blocker=" + blocker + " — " +
       ctx.failureContext + " (no retries, no diagnosis)."
@@ -701,7 +701,7 @@ async function batchEscalate(stage, attempts, ctx) {
   // OWN diagnosis + escalation comment would post a SECOND terminal for one
   // failure. Rethrow instead; any other (non-EscalationStop) cleanup error is
   // still just logged, since escalation must proceed either way.
-  try { await cleanupBatchWorktrees(ctx, stage, "escalate " + stage); } catch (e) { if (e instanceof EscalationStop) throw e; log("cleanup before batch escalation failed: " + e.message); }
+  try { await cleanupBatchWorktrees(ctx, stage, "escalate " + stage, ctx.branch); } catch (e) { if (e instanceof EscalationStop) throw e; log("cleanup before batch escalation failed: " + e.message); }
   const rootCause = await postEscalation(stage, attempts, ctx, "batch");
   throw new EscalationStop(stage, attempts, rootCause);
 }
@@ -869,8 +869,17 @@ async function cleanupWorktrees(ctx, phaseName, tag) {
  *     cleanup" covers this: that is only true for a feature that reached
  *     reviewed-green or was itself paused/escalated (both call
  *     cleanupWorktrees) — an ERRORED feature did not, until this same fix
- *     round's MINOR 4 change. */
-async function cleanupBatchWorktrees(ctx, phaseName, tag) {
+ *     round's MINOR 4 change.
+ *
+ * M10: `devBranchName` is passed as a parameter rather than closed over the
+ * module-level `devBranch` (declared ~380 lines below this function, in the
+ * MAIN FLOW section) — the same reasoning as `finishWithoutCi`'s own
+ * `outcomes` parameter: every current call site happens to run after that
+ * const is initialized, but a forward reference to a not-yet-declared
+ * top-level `const` is a TDZ hazard for any future caller earlier in the
+ * file. Every call site passes `ctx.branch`, which for the batch ctx IS
+ * devBranch (see batchCtx's own `branch: devBranch`). */
+async function cleanupBatchWorktrees(ctx, phaseName, tag, devBranchName) {
   if (ctx.cleaningUp) return { ok: true, removed: [] };
   ctx.cleaningUp = true;
   try {
@@ -879,11 +888,11 @@ async function cleanupBatchWorktrees(ctx, phaseName, tag) {
     // stray worktreeBranch report of devBranch is normally an ancestor of
     // devBranch itself (trivially true) and must never even be OFFERED to
     // the `git branch -d` step.
-    const sideBranches = ctx.worktreeBranches.filter((b) => b && b !== devBranch);
+    const sideBranches = ctx.worktreeBranches.filter((b) => b && b !== devBranchName);
     const r = await mechanical(ctx, "cleanup-worktrees", phaseName,
       "(" + tag + ")\n" +
         "1. For each of these paths: " + (owned.length ? owned.join(", ") : "(none)") + " — if `git worktree list --porcelain` lists it and it is NOT the main working tree, run `git worktree remove <path>` (no --force). If git refuses (dirty tree), leave it and list the path in `detail`.\n" +
-        (sideBranches.length ? "2. For each of " + sideBranches.join(", ") + ": if `git merge-base --is-ancestor <name> " + devBranch + "` succeeds (merged into " + devBranch + "), run `git branch -d <name>` (never -D, and never delete " + devBranch + " itself); otherwise leave it.\n" : "") +
+        (sideBranches.length ? "2. For each of " + sideBranches.join(", ") + ": if `git merge-base --is-ancestor <name> " + devBranchName + "` succeeds (merged into " + devBranchName + "), run `git branch -d <name>` (never -D, and never delete " + devBranchName + " itself); otherwise leave it.\n" : "") +
         (sideBranches.length ? "3" : "2") + ". `git worktree prune`.\n" +
         "Return ok=true and `removed` = the worktree paths actually removed in step 1.",
       CLEANUP_SCHEMA);
@@ -1008,7 +1017,7 @@ async function finishWithoutCi(ctx, why, outcomes) {
     "Post ONE short comment on PR " + ctx.prUrl + " via the GitHub MCP server: 'CI was not run by the autonomous workflow: " + why + ". All reviewed-green features passed gates, review panel and smoke; see the PR body.' Do not push, merge or modify code.",
     { label: "comment-ci-skipped", phase: "CI", model: "sonnet", effort: "low" }
   );
-  try { await cleanupBatchWorktrees(ctx, "CI", "ci skipped"); } catch (e) { log("cleanup before CI-skip return failed: " + e.message); }
+  try { await cleanupBatchWorktrees(ctx, "CI", "ci skipped", ctx.branch); } catch (e) { log("cleanup before CI-skip return failed: " + e.message); }
   log("CI skipped (" + why + "). PR awaits Gate B: " + ctx.prUrl);
   const green = outcomes.filter((o) => o && !o.escalated);
   const escalated = outcomes.filter((o) => o && o.escalated);
@@ -1360,7 +1369,7 @@ const green = outcomes.filter((o) => o && !o.escalated);
 const escalated = outcomes.filter((o) => o && o.escalated);
 
 // Batch-level prune, once after every feature has finished with the shared repo.
-try { await cleanupBatchWorktrees(batchCtx, "Integrate", "after fan-out"); } catch (e) { log("batch cleanup after fan-out failed: " + e.message); }
+try { await cleanupBatchWorktrees(batchCtx, "Integrate", "after fan-out", batchCtx.branch); } catch (e) { log("batch cleanup after fan-out failed: " + e.message); }
 
 log(
   "Fan-out complete: " +
@@ -1494,7 +1503,7 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
   if (ci.status === "green") {
     ciGreen = true;
     log("Batch CI is GREEN. dev->main PR ready for Gate B (human merge): " + ship.prUrl);
-    try { await cleanupBatchWorktrees(batchCtx, "CI", "ci green"); } catch (e) { log("cleanup before CI-green return failed: " + e.message); }
+    try { await cleanupBatchWorktrees(batchCtx, "CI", "ci green", batchCtx.branch); } catch (e) { log("cleanup before CI-green return failed: " + e.message); }
     break;
   }
 
