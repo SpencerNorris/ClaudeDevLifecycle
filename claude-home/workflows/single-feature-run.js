@@ -393,6 +393,7 @@ class EscalationStop extends Error {
  * `break` — control does not come back.
  */
 async function escalate(stage, attempts, context) {
+  try { await cleanupWorktrees(context, stage, "escalate " + stage); } catch (e) { log("cleanup before escalation failed: " + e.message); }
   log(
     "CIRCUIT BREAKER: stage '" +
       stage +
@@ -479,6 +480,7 @@ async function escalate(stage, attempts, context) {
  * ALWAYS throws, like escalate().
  */
 async function pauseForHuman(stage, blocker, context) {
+  try { await cleanupWorktrees(context, stage, "pause " + stage); } catch (e) { log("cleanup before pause failed: " + e.message); }
   log(
     "PAUSED FOR HUMAN at stage '" + stage + "': blocker=" + blocker + " — " +
       context.failureContext + " (no retries, no diagnosis)."
@@ -500,6 +502,128 @@ async function pauseForHuman(stage, blocker, context) {
     { label: "pause-for-human", phase: stage, model: "sonnet", effort: "low" }
   );
   throw new EscalationStop(stage, 1, "PAUSED (" + blocker + "): " + context.failureContext);
+}
+
+// ---------------------------------------------------------------------------
+// Mechanical steps (spec: Constraints). The DSL has no shell, so every
+// deterministic git/gh action is an agent with a fixed command list, low
+// effort, and a schema. Each prompt embeds the pass and the commit it acts
+// on, because the harness caches results by prompt (cache rule).
+// ---------------------------------------------------------------------------
+const MECHANICAL_PREAMBLE =
+  "MECHANICAL STEP — run exactly the commands below, in order. Do not improvise, do not fix anything, " +
+  "do not run any other command. Return only the structured result.\n\n";
+
+// Recursion guard: cleanupWorktrees calls mechanical(), which calls
+// pauseForHuman() on a dead agent, which itself calls cleanupWorktrees() as
+// its first statement. Without this guard a dead cleanup agent would recurse
+// once into pauseForHuman's own cleanup call.
+let cleaningUp = false;
+
+async function mechanical(ctx, label, phaseName, commands, schema) {
+  const r = await agent(MECHANICAL_PREAMBLE + commands, { label, phase: phaseName, model: "sonnet", effort: "low", schema });
+  if (!r) {
+    ctx.failureContext = label + " agent died without returning a result (usage-limit or harness interruption).";
+    await pauseForHuman(phaseName, "usage_limit", ctx);
+  }
+  return r;
+}
+
+const DETACH_SCHEMA = { type: "object", additionalProperties: false, required: ["ok", "detached"],
+  properties: { ok: { type: "boolean" }, detached: { type: "array", items: { type: "string" } }, detail: { type: "string" } } };
+const RECONCILE_SCHEMA = { type: "object", additionalProperties: false, required: ["ok", "sha", "detail"],
+  properties: { ok: { type: "boolean" }, sha: { type: "string", pattern: "^[0-9a-f]{40}$" }, detail: { type: "string" } } };
+const PIN_SCHEMA = { type: "object", additionalProperties: false, required: ["ok", "path", "sha"],
+  properties: { ok: { type: "boolean" }, path: { type: "string" }, sha: { type: "string", pattern: "^[0-9a-f]{40}$" }, detail: { type: "string" } } };
+const CLEANUP_SCHEMA = { type: "object", additionalProperties: false, required: ["ok", "removed"],
+  properties: { ok: { type: "boolean" }, removed: { type: "array", items: { type: "string" } }, detail: { type: "string" } } };
+
+/** The run owns a branch only after the first implement result (spec D1). */
+function runOwnsBranch(ctx) {
+  return !!ctx.headSha && ctx.branch !== devBranch;
+}
+
+/** Detach every worktree that holds ctx.branch so the next implementer can
+ * check it out; the detached paths become run-owned (spec D1, D6). Runs
+ * unconditionally, including before the very first implement (ctx.branch is
+ * still devBranch then): git refuses to check the same branch out in two
+ * worktrees at once, so a pre-ownership call can only ever find the excluded
+ * main working tree and no-ops safely — it is never asked to touch a
+ * worktree checked out on devBranch other than that one. */
+async function detachWorktrees(ctx, phaseName, pass) {
+  const r = await mechanical(ctx, "detach-worktrees", phaseName,
+    "(pass " + pass + ", head " + ctx.headSha + ")\n" +
+      "1. `git worktree list --porcelain` — for every worktree whose `branch` line is `refs/heads/" + ctx.branch + "` " +
+      "and whose path is NOT the main working tree, run `git -C <path> checkout --detach`.\n" +
+      "2. Return ok=true and `detached` = the absolute paths you detached (empty if none).",
+    DETACH_SCHEMA);
+  for (const p of r.detached || []) if (!ctx.ownedWorktrees.includes(p)) ctx.ownedWorktrees.push(p);
+  return r;
+}
+
+/** Move ctx.branch to the implementer's headSha, or escalate when the commit
+ * does not descend from the branch (spec D1). Detaches any holder first so a
+ * dirty holder cannot block the ref update. Sets ctx.headSha. */
+async function reconcileBranch(ctx, implementResult, phaseName, pass) {
+  const sha = implementResult.headSha;
+  const r = await mechanical(ctx, "reconcile-branch", phaseName,
+    "(pass " + pass + ")\n" +
+      "1. `git merge-base --is-ancestor " + ctx.branch + " " + sha + "`; if the exit code is non-zero return ok=false, sha=`" + sha + "`, detail='" + ctx.branch + " is not an ancestor of " + sha + "'.\n" +
+      "2. `git worktree list --porcelain`; for every worktree (not the main working tree) with `branch refs/heads/" + ctx.branch + "`, run `git -C <path> checkout --detach`.\n" +
+      "3. `git update-ref refs/heads/" + ctx.branch + " " + sha + "`.\n" +
+      "4. `git rev-parse " + ctx.branch + "` must print `" + sha + "`. Return ok=true, sha=that value, detail='fast-forwarded'.",
+    RECONCILE_SCHEMA);
+  if (!r.ok || r.sha !== sha) {
+    ctx.failureContext = "Branch reconciliation failed: " + r.detail;
+    await escalate("Implement", 1, ctx);
+  }
+  ctx.headSha = sha;
+  return sha;
+}
+
+/** Check headSha out, detached, in a run-owned worktree that every later
+ * stage works in (spec D1). Never the main working tree: the human works there. */
+async function pinRunWorktree(ctx, phaseName, pass) {
+  const slug = ctx.branch.replace(/[^A-Za-z0-9._-]+/g, "-");
+  const path = ".claude/worktrees/run-" + slug;
+  const r = await mechanical(ctx, "pin-run-worktree", phaseName,
+    "(pass " + pass + ")\n" +
+      "1. If `" + path + "` exists and is a worktree (`git worktree list --porcelain` lists it): `git -C " + path + " status --porcelain`; if non-empty return ok=false with the output as detail; else `git -C " + path + " checkout --detach " + ctx.headSha + "`.\n" +
+      "2. Otherwise: `git worktree add --detach " + path + " " + ctx.headSha + "`.\n" +
+      "3. `git -C " + path + " rev-parse HEAD` must print `" + ctx.headSha + "`. Return ok=true, path=the absolute path of " + path + ", sha=that value.",
+    PIN_SCHEMA);
+  if (!r.ok) {
+    ctx.failureContext = "Could not pin the run worktree at " + ctx.headSha + ": " + (r.detail || "");
+    await escalate(phaseName, 1, ctx);
+  }
+  ctx.runWorktree = r.path;
+  if (!ctx.ownedWorktrees.includes(r.path)) ctx.ownedWorktrees.push(r.path);
+  return r;
+}
+
+/** Remove the run's own worktrees and reconciled side branches (spec D6).
+ * Runs after ship and before either terminal throws. Never --force, never a
+ * worktree the run did not create or detach, never ctx.branch. */
+async function cleanupWorktrees(ctx, phaseName, tag) {
+  if (!runOwnsBranch(ctx)) return { ok: true, removed: [] };
+  if (cleaningUp) return { ok: true, removed: [] };
+  cleaningUp = true;
+  try {
+    const side = ctx.worktreeBranches.filter((b) => b && b !== ctx.branch);
+    const owned = ctx.ownedWorktrees.slice();
+    const r = await mechanical(ctx, "cleanup-worktrees", phaseName,
+      "(" + tag + ", head " + ctx.headSha + ")\n" +
+        "1. `git worktree list --porcelain`. For every worktree that is NOT the main working tree and is EITHER one of these paths: " + (owned.length ? owned.join(", ") : "(none)") +
+        " OR has `branch refs/heads/" + ctx.branch + "`" + (side.length ? " OR one of: " + side.map((b) => "refs/heads/" + b).join(", ") : "") +
+        ": run `git worktree remove <path>` (no --force). If git refuses (dirty tree), leave it and list the path in `detail`.\n" +
+        "2. `git worktree prune`.\n" +
+        (side.length ? "3. For each of " + side.join(", ") + ": if `git merge-base --is-ancestor <name> " + ctx.branch + "` succeeds, run `git branch -d <name>`; otherwise leave it.\n" : "") +
+        "Return ok=true and `removed` = the worktree paths removed. Never delete " + ctx.branch + ".",
+      CLEANUP_SCHEMA);
+    return r;
+  } finally {
+    cleaningUp = false;
+  }
 }
 
 // ===========================================================================
@@ -590,6 +714,8 @@ const planClause = preApprovedPlan
   ? "A plan was pre-approved at Gate A; follow it:\n" + preApprovedPlan + "\n"
   : "No plan was pre-approved. If the surface is non-trivial (anything beyond a <=10-line, single-file, no-behavior-change edit per master-design-doc.md §14.1), draft a short plan first, then implement it.\n";
 
+await detachWorktrees(ctx, "Implement", 0);
+
 let implementResult = await agent(
   "AUTONOMOUS single-feature run, IMPLEMENT phase (master-design-doc.md §5, D2).\n" +
     "Create a NON-MAIN branch off '" +
@@ -624,6 +750,8 @@ ctx.branch = implementResult.branch;
 ctx.headSha = implementResult.headSha;
 if (implementResult.worktreeBranch) ctx.worktreeBranches.push(implementResult.worktreeBranch);
 ctx.minorsDeferred = ctx.minorsDeferred.concat(implementResult.minorsDeferred || []);
+await reconcileBranch(ctx, implementResult, "Implement", 0);
+await pinRunWorktree(ctx, "Implement", 0);
 if (isExternalBlocker(implementResult.blocker)) {
   ctx.failureContext = implementResult.blockerDetail || ("blocker=" + implementResult.blocker);
   await pauseForHuman("Implement", implementResult.blocker, ctx);
@@ -823,16 +951,6 @@ if (isExternalBlocker(ship.blocker) || !ship.pushed || !ship.prUrl) {
   await pauseForHuman("Ship", isExternalBlocker(ship.blocker) ? ship.blocker : "infra", ctx);
 }
 log("Branch pushed and PR opened: " + ctx.prUrl);
-
-// Cleanup (added 2026-09-03): the implementer's worktree has served its purpose
-// once the branch is pushed. Leaving it locks the branch against checkout
-// elsewhere and litters .claude/worktrees (28 accumulated once). Best-effort;
-// the branch itself is never deleted here.
-await agent(
-  "Remove any git worktree whose checked-out branch is '" + ctx.branch +
-    "' (`git worktree list`, then `git worktree remove --force <path>`, then `git worktree prune`). Do NOT delete the branch. If removal is refused, say why and stop — do not escalate.",
-  { label: "cleanup-worktree", phase: "Ship", model: "sonnet", effort: "low" }
-);
 
 // ---------------------------------------------------------------------------
 // PHASE 5 — CI. Poll GitHub Actions; on red, fix + re-push, capped at K.

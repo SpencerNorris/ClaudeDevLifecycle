@@ -184,6 +184,56 @@ test("cache-collision guard: a cacheable entry does not trip the collision check
   );
 });
 
+test("single: the first implement is preceded by detach and followed by reconcile and pin", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  const i = run.labels.indexOf("implement-tdd");
+  assert.equal(run.labels[i - 1], "detach-worktrees");
+  assert.equal(run.labels[i + 1], "reconcile-branch");
+  assert.equal(run.labels[i + 2], "pin-run-worktree");
+  const pin = run.prompts.find((p) => p.label === "pin-run-worktree");
+  assert.match(pin.prompt, new RegExp(SHA_A));
+  assert.match(pin.prompt, /pass 0/);
+});
+
+test("single: a diverged reconcile cleans up, then escalates; no later stage runs", async () => {
+  const scenario = { ...HAPPY,
+    "reconcile-branch": { ok: false, sha: SHA_B, detail: "feat/dark-mode is not an ancestor of " + SHA_B },
+    "root-cause-diagnosis": "the implementer rebased onto a stale base",
+    "escalate-to-issue": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop");
+  const c = run.labels.indexOf("cleanup-worktrees"), d = run.labels.indexOf("root-cause-diagnosis");
+  assert.ok(c > -1 && c < d, "cleanup runs before the diagnosis");
+  assert.ok(!run.labels.includes("gates"));
+});
+
+// TODO(Task 4): "design-review" is not dispatched by the script until Task 4
+// makes it run.labels[0] (task-4-brief.md). Until then this scenario's
+// override is inert and the run instead reaches "validate-and-dod", where the
+// pre-existing R.dodPass "cases" field (forward-referenced for Task 5,
+// out of scope here) trips the harness's own additionalProperties check
+// before the workflow can reach a real terminal — so run.error is an
+// AssertionError from the test stub, never EscalationStop. Un-mark once
+// Task 4 lands.
+test("single: a design-stage pause does not run cleanup (the run owns nothing yet)", { todo: true }, async () => {
+  const scenario = { ...HAPPY,
+    "design-review": { ...R.design, blocker: "ambiguity", blockerDetail: "no acceptance criteria" },
+    "pause-for-human": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop");
+  assert.ok(!run.labels.includes("cleanup-worktrees"), "nothing to clean before the run owns a branch");
+  assert.ok(!run.labels.includes("detach-worktrees"), "no detach before the run owns a branch");
+});
+
+test("single: a dead mechanical agent pauses for a human instead of throwing raw", async () => {
+  const scenario = { ...HAPPY, "pin-run-worktree": null, "pause-for-human": "posted" };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop");
+  assert.ok(run.labels.includes("pause-for-human"));
+});
+
 test("cache-collision guard: a genuine repeated (label, prompt) throws unless cacheable", async () => {
   // Neither workflow script repeats a verbatim prompt for the same label on
   // the happy path, so drive the stub directly with a synthetic script body
