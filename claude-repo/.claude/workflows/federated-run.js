@@ -1468,7 +1468,9 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
   if (ci.blocker === "billing") return await finishWithoutCi(batchCtx, "GitHub reported a billing/quota refusal: " + (ci.logsExcerpt || ci.blockerDetail || "").slice(0, 200), outcomes);
   if (isExternalBlocker(ci.blocker)) await batchCtx.fail("CI", ci.blocker, ci.blockerDetail || ci.logsExcerpt || ("blocker=" + ci.blocker));
 
-  if (!ci || !terminal) {
+  // M5: the preceding `if (!ci)` above always throws (batchCtx.fail never
+  // returns), so `ci` is guaranteed non-null here — the `!ci` disjunct was dead.
+  if (!terminal) {
     await batchCtx.fail("CI", "code", "Batch CI did not reach a terminal state within the poll budget on fix attempt " + fixAttempt + ".", fixAttempt);
   }
 

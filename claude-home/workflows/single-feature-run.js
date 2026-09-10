@@ -1250,7 +1250,9 @@ for (let fixAttempt = 1; fixAttempt <= K && !ciGreen; fixAttempt++) {
   if (ci.blocker === "billing") return await finishWithoutCi(ctx, "GitHub reported a billing/quota refusal: " + (ci.logsExcerpt || ci.blockerDetail || "").slice(0, 200));
   if (isExternalBlocker(ci.blocker)) { ctx.failureContext = ci.blockerDetail || ci.logsExcerpt || ("blocker=" + ci.blocker); await pauseForHuman("CI", ci.blocker, ctx); }
 
-  if (!ci || !terminal) {
+  // M5: the preceding `if (!ci)` above always throws (pauseForHuman never
+  // returns), so `ci` is guaranteed non-null here — the `!ci` disjunct was dead.
+  if (!terminal) {
     ctx.failureContext =
       "CI did not reach a terminal state within the poll budget on fix attempt " + fixAttempt + ".";
     await escalate("CI", fixAttempt, ctx);
