@@ -897,6 +897,9 @@ async function finishWithoutCi(ctx, why) {
   );
   try { await cleanupWorktrees(ctx, "CI", "ci skipped"); } catch (e) { log("cleanup before CI-skip return failed: " + e.message); }
   log("CI skipped (" + why + "). PR awaits Gate B: " + ctx.prUrl);
+  // M11: `ciSkipped` is always the literal "quota" even on the billing-red
+  // skip path (spec D8) — the return value is a coarse discriminator, not the
+  // reason; the PR comment posted above (and `why`) carries the real reason.
   return { prUrl: ctx.prUrl, branch: ctx.branch, headSha: ctx.headSha, issue: issueRef, ciSkipped: "quota" };
 }
 

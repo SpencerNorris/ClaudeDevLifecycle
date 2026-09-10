@@ -1024,6 +1024,9 @@ async function finishWithoutCi(ctx, why, outcomes) {
   return {
     prUrl: ctx.prUrl,
     shipped: true,
+    // M11: always the literal "quota" even on the billing-red skip path (spec
+    // D8) — a coarse discriminator, not the reason; the PR comment posted
+    // above (and `why`) carries the real reason.
     ciSkipped: "quota",
     shippedFeatures: green.map((o) => o.feature.id),
     escalated: escalated.map((o) => ({ feature: o.feature.id, branch: o.branch, reason: o.reason })),
