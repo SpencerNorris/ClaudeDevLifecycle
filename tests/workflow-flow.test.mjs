@@ -633,3 +633,16 @@ test("federated: an unexpected throw from a feature's own dispatch still escalat
   assert.equal(run.result.escalated.length, 1);
   assert.equal(run.result.escalated[0].feature, "f1");
 });
+
+test("federated: a batch-level pause falls back to the PR URL, then a plain note, when args.issue is absent (I6)", async () => {
+  const scenario = { ...FED_HAPPY,
+    "push-and-open-pr": { pushed: false, blocker: "infra", blockerDetail: "GitHub unreachable" },
+    "pause-for-human": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
+  const pause = run.prompts.find((p) => p.label === "pause-for-human");
+  assert.ok(pause, "pause-for-human never dispatched");
+  assert.match(pause.prompt, /no batch issue given/, "falls back to the plain note when both issue and prUrl are absent");
+  assert.doesNotMatch(pause.prompt, /Issue: main\b/, "the dev branch name must never be posted as the issue");
+});

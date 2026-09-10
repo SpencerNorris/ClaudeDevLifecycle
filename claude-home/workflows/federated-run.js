@@ -521,6 +521,10 @@ class FeatureStop extends Error {
  * "batch").
  */
 async function postEscalation(stage, attempts, ctx, label) {
+  // I6: ctx.issue can be null for the batch ctx (args.issue is optional) — fall
+  // back to the PR URL, then to a plain note, rather than posting "Issue: null"
+  // or (the prior bug) the dev branch name mistaken for an issue.
+  const issueLine = ctx.issue || ctx.prUrl || "(no batch issue given — see the run log)";
   log(
     "CIRCUIT BREAKER: '" +
       stage +
@@ -542,7 +546,7 @@ async function postEscalation(stage, attempts, ctx, label) {
       " attempts? Do NOT propose a shim or a way to merely pass. Identify the " +
       "underlying cause as precisely as the evidence allows.\n\n" +
       "Issue: " +
-      ctx.issue +
+      issueLine +
       "\nBranch: " +
       ctx.branch +
       "\nPR: " +
@@ -558,7 +562,7 @@ async function postEscalation(stage, attempts, ctx, label) {
       NEEDS_HUMAN_LABEL +
       "' label. Do NOT push, merge, or modify code. Leave the branch and PR in place.\n\n" +
       "Issue: " +
-      ctx.issue +
+      issueLine +
       "\n\nThe comment MUST contain, as clearly labeled sections:\n" +
       "- Stage that failed: " +
       stage +
@@ -628,11 +632,13 @@ async function pauseForHuman(stage, blocker, ctx) {
     "PAUSED FOR HUMAN (batch) at stage '" + stage + "': blocker=" + blocker + " — " +
       ctx.failureContext + " (no retries, no diagnosis)."
   );
+  // I6: fall back to the PR URL, then a plain note, when args.issue was not given.
+  const issueLine = ctx.issue || ctx.prUrl || "(no batch issue given — see the run log)";
   await agent(
     "Post a SHORT comment to the relevant issue via the GitHub MCP server and add the '" +
       NEEDS_HUMAN_LABEL +
       "' label. Do NOT push, merge, or modify code.\n\nIssue: " +
-      ctx.issue +
+      issueLine +
       "\nBranch: " +
       ctx.branch +
       "\nPR: " +
@@ -1203,6 +1209,10 @@ async function processFeature(feature, ctx, devBranchName) {
 const features = RUN_ARGS.features;
 const devBranch = RUN_ARGS.devBranch || RUN_ARGS.branch;
 const gateCommands = RUN_ARGS.gateCommands && typeof RUN_ARGS.gateCommands === "object" ? RUN_ARGS.gateCommands : null;
+// args.issue (or args.batchIssue) — OPTIONAL (I6): a GitHub issue for the
+// BATCH itself (Integrate/Ship/CI escalations), distinct from each feature's
+// own required `issue`. When not given, a batch-level escalation posts to the
+// PR instead (see postEscalation/pauseForHuman's issueLine fallback).
 
 // Resume support (added 2026-09-03; mirrors single-feature-run.js): the harness
 // caches a completed agent() result by (prompt, opts), so a resumed run would
@@ -1238,7 +1248,12 @@ log(
 // calls are no-ops by design; only reconcile/pin (used by the CI-fix
 // reconciled dispatch) actually run against it.
 const batchCtx = {
-  issue: devBranch,
+  // I6: devBranch is a branch name, not a GitHub issue — a batch-level
+  // escalation with nowhere else to post used to name the branch as its
+  // "issue". args.issue (or args.batchIssue) is the batch's own optional
+  // issue; postEscalation/pauseForHuman fall back to the PR URL, then to a
+  // plain "no issue" note, when it is not given.
+  issue: RUN_ARGS.issue || RUN_ARGS.batchIssue || null,
   branch: devBranch,
   headSha: null,
   runWorktree: null,
