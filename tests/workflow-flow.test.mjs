@@ -669,6 +669,36 @@ test("federated: M7 — an ambiguity-blocked first implement pauses that feature
   assert.equal(run.result.escalated[0].feature, "f1");
 });
 
+test("federated: M16 — a feature's review reject triggers reimplement, then a DELTA review with that seat's own findings, and one smoke", async () => {
+  // Mirrors the single test "a review reject triggers reimplement, then a
+  // DELTA review with that seat's own findings, and one smoke", tag-prefixed.
+  const reject = { verdict: "reject", summary: "bad", findings: [{ id: "F1", severity: "blocking", category: "correctness", detail: "no ON CONFLICT", location: "src/x.py:10" }] };
+  const scenario = { ...FED_HAPPY,
+    [T + "adversarial-reviewer"]: (p, o, n) => (n === 0 ? reject : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed", note: "ok" }] }),
+    [T + "reimplement-after-review"]: { ...R.implement, headSha: SHA_B, minorsDeferred: [{ id: "F9", reason: "out of scope: unrelated module" }] },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const f = run.labels.filter((l) => l.startsWith(T));
+  assertSequence(f, [
+    T + "design-review", T + "implement", T + "detach-worktrees", T + "reconcile-branch", T + "pin-run-worktree",
+    T + "gates", [T + "adversarial-reviewer", T + "correctness-reviewer"],
+    T + "detach-worktrees", T + "reimplement-after-review", T + "detach-worktrees", T + "reconcile-branch", T + "pin-run-worktree",
+    T + "gates", [T + "adversarial-reviewer", T + "correctness-reviewer"],
+    T + "validate-and-dod", T + "cleanup-worktrees",
+  ]);
+  const adv = run.prompts.filter((p) => p.label === T + "adversarial-reviewer");
+  const cor = run.prompts.filter((p) => p.label === T + "correctness-reviewer");
+  assert.match(adv[1].prompt, /DELTA REVIEW/);
+  assert.match(adv[1].prompt, /F1 .*no ON CONFLICT/);
+  assert.doesNotMatch(cor[1].prompt, /no ON CONFLICT/, "a seat sees only its own findings");
+  assert.match(adv[1].prompt, new RegExp(SHA_A + "\\.\\." + SHA_B));
+  assert.doesNotMatch(adv[1].prompt, /git diff main\.\.\./, "delta mode does not ask for the full diff");
+  assert.match(adv[1].prompt, /DEFERRALS CLAIMED[\s\S]*F9/, "deferrals are judged by the panel");
+  assert.equal(run.labels.filter((x) => x === T + "validate-and-dod").length, 1);
+  assert.equal(run.result.shipped, true);
+});
+
 test("federated: a feature whose reconcile fails is excluded and the batch continues", async () => {
   const args2 = { devBranch: "main", features: [
     { id: "f1", title: "dark mode", issue: "owner/repo#1", plan: "do it" },
