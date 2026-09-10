@@ -325,6 +325,7 @@ const CI_SCHEMA = {
   additionalProperties: false,
   required: ["status", "blocker"],
   properties: {
+    // "green" = all checks passed; "red" = a check failed; "pending" = still running.
     status: { type: "string", enum: ["green", "red", "pending"] },
     failingJobs: { type: "array", items: { type: "string" } },
     logsExcerpt: { type: "string" },
