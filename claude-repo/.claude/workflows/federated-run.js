@@ -585,7 +585,7 @@ async function postEscalation(stage, attempts, ctx, label) {
       (ctx.prUrl || "not yet opened") +
       "\nFailure context:\n" +
       ctx.failureContext,
-    { label: "root-cause:" + label, phase: stage, effort: "high" }
+    { label: "root-cause:" + label, phase: stage, model: "opus", effort: "high" }
   );
 
   await agent(

@@ -751,6 +751,16 @@ test("federated: an unexpected throw from a feature's own dispatch still escalat
   assert.equal(run.result.escalated[0].feature, "f1");
 });
 
+test("federated: M12 — postEscalation's root-cause agent runs on opus, matching the single script", async () => {
+  const args2 = { devBranch: "main", features: [{ id: "f1", title: "dark mode", issue: "owner/repo#1", plan: "do it" }] };
+  const scenario = { ...HAPPY, "feat:f1:design-review": null, "root-cause:*": "diagnosed", "escalate:*": "posted" };
+  const run = await runWorkflowRecording(SCRIPTS.federated, args2, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const rc = run.prompts.find((p) => p.label === "root-cause:feat:f1");
+  assert.ok(rc, "root-cause:feat:f1 never dispatched");
+  assert.equal(rc.opts.model, "opus");
+});
+
 test("federated: M4 — a stray worktreeBranch report of devBranch is never offered to cleanupBatchWorktrees's branch-delete step", async () => {
   const scenario = { ...FED_HAPPY,
     "poll-ci": (p, o, n) => (n === 0 ? { status: "red", blocker: "code", failingJobs: ["unit"], logsExcerpt: "boom" } : R.ciGreen),
