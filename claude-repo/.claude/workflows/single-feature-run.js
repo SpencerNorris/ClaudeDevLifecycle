@@ -1059,14 +1059,19 @@ ctx.branch = implementResult.branch;
 ctx.headSha = implementResult.headSha;
 ctx.lastImplementSummary = implementResult.summary || "";
 ctx.lastFilesTouched = implementResult.filesTouched || [];
+// M7: the blocker check runs immediately after worktreeBranch is recorded,
+// BEFORE reconcile/pin — the same order reimplement() already uses. An
+// ambiguity-blocked implementer that created no real branch would otherwise
+// fail reconcileBranch's ancestor check and escalate ("cap exhausted")
+// instead of taking the cheap pauseForHuman path.
 if (implementResult.worktreeBranch) ctx.worktreeBranches.push(implementResult.worktreeBranch);
-ctx.minorsDeferred = ctx.minorsDeferred.concat(implementResult.minorsDeferred || []);
-await reconcileBranch(ctx, implementResult, "Implement", 0);
-await pinRunWorktree(ctx, "Implement", 0);
 if (isExternalBlocker(implementResult.blocker)) {
   ctx.failureContext = implementResult.blockerDetail || ("blocker=" + implementResult.blocker);
   await pauseForHuman("Implement", implementResult.blocker, ctx);
 }
+ctx.minorsDeferred = ctx.minorsDeferred.concat(implementResult.minorsDeferred || []);
+await reconcileBranch(ctx, implementResult, "Implement", 0);
+await pinRunWorktree(ctx, "Implement", 0);
 log("Implementation branch: " + ctx.branch + ". Entering the validate/review loop (cap K=" + K + ").");
 
 let dodReport = null;

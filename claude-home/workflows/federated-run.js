@@ -1140,13 +1140,18 @@ async function processFeature(feature, ctx, devBranchName) {
     ctx.headSha = implementResult.headSha;
     ctx.lastImplementSummary = implementResult.summary || "";
     ctx.lastFilesTouched = implementResult.filesTouched || [];
+    // M7: the blocker check runs immediately after worktreeBranch is
+    // recorded, BEFORE reconcile/pin — the same order reimplement() already
+    // uses. An ambiguity-blocked implementer that created no real branch
+    // would otherwise fail reconcileBranch's ancestor check and escalate
+    // ("cap exhausted") instead of taking the cheap ctx.fail pause path.
     if (implementResult.worktreeBranch) ctx.worktreeBranches.push(implementResult.worktreeBranch);
-    ctx.minorsDeferred = ctx.minorsDeferred.concat(implementResult.minorsDeferred || []);
-    await reconcileBranch(ctx, implementResult, "Implement", 0);
-    await pinRunWorktree(ctx, "Implement", 0);
     if (isExternalBlocker(implementResult.blocker)) {
       await ctx.fail("Implement", implementResult.blocker, implementResult.blockerDetail || ("blocker=" + implementResult.blocker));
     }
+    ctx.minorsDeferred = ctx.minorsDeferred.concat(implementResult.minorsDeferred || []);
+    await reconcileBranch(ctx, implementResult, "Implement", 0);
+    await pinRunWorktree(ctx, "Implement", 0);
 
     // ---- PHASES 2+3+4: GATES / REVIEW / VALIDATE, two independent budgets --
     let dodReport = null;

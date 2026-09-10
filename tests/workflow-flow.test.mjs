@@ -282,6 +282,18 @@ test("single: a design-stage pause does not run cleanup (the run owns nothing ye
   assert.ok(!run.labels.includes("detach-worktrees"), "no detach before the run owns a branch");
 });
 
+test("single: M7 — an ambiguity-blocked first implement pauses before reconcile ever runs", async () => {
+  const scenario = { ...HAPPY,
+    "implement-tdd": { ...R.implement, headSha: SHA_B, blocker: "ambiguity", blockerDetail: "cannot derive acceptance criteria" },
+    "pause-for-human": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
+  assert.ok(!run.labels.includes("reconcile-branch"), "reconcile must never run for a blocked first implement");
+  assert.ok(!run.labels.includes("escalate-to-issue"), "an external blocker must pause, not escalate with a root-cause diagnosis");
+  assert.ok(run.labels.includes("pause-for-human"));
+});
+
 test("single: a dead mechanical agent pauses for a human instead of throwing raw", async () => {
   const scenario = { ...HAPPY, "pin-run-worktree": null, "pause-for-human": "posted" };
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
@@ -638,6 +650,19 @@ test("federated: each feature core runs design, implement, reconcile, pin, gates
   assert.equal(run.error, null, run.error && run.error.stack);
   const f = run.labels.filter((l) => l.startsWith(T));
   assertSequence(f.slice(0, 9), [T + "design-review", T + "implement", T + "detach-worktrees", T + "reconcile-branch", T + "pin-run-worktree", T + "gates", [T + "adversarial-reviewer", T + "correctness-reviewer"], T + "validate-and-dod"]);
+});
+
+test("federated: M7 — an ambiguity-blocked first implement pauses that feature before reconcile ever runs", async () => {
+  const scenario = { ...FED_HAPPY,
+    [T + "implement"]: { ...R.implement, headSha: SHA_B, blocker: "ambiguity", blockerDetail: "cannot derive acceptance criteria" },
+    "pause-feature-for-human:f1": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.ok(!run.labels.includes(T + "reconcile-branch"), "reconcile must never run for a blocked first implement");
+  assert.ok(run.labels.includes("pause-feature-for-human:f1"));
+  assert.equal(run.result.shipped, false);
+  assert.equal(run.result.escalated[0].feature, "f1");
 });
 
 test("federated: a feature whose reconcile fails is excluded and the batch continues", async () => {
