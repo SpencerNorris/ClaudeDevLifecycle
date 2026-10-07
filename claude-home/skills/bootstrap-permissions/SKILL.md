@@ -259,7 +259,9 @@ session that a future session then inherits. Deny that path unconditionally:
 "permissions": {
   "deny": [
     "Edit(.claude/settings.local.json)",
-    "Edit(.claude/settings.json)"
+    "Write(.claude/settings.local.json)",
+    "Edit(.claude/settings.json)",
+    "Write(.claude/settings.json)"
   ]
 }
 ```
@@ -295,7 +297,7 @@ allow-list edit could accidentally widen scope:
 Call these out in the proposal so the user understands deny is a hard block,
 not a prompt gate.
 
-**Chicken-and-egg warning:** Once `Edit(.claude/settings.local.json)` is
+**Chicken-and-egg warning:** Once `Edit/Write(.claude/settings.local.json)` is
 denied, Claude cannot repair the settings file itself. If a bad entry gets in
 (e.g., a malformed PATH, a typo in a glob), the user has to fix it manually.
 Get the settings right on the first write. In particular:
@@ -345,7 +347,9 @@ Output something like:
 >     ],
 >     "deny": [
 >       "Edit(.claude/settings.local.json)",
->       "Edit(.claude/settings.json)"
+>       "Write(.claude/settings.local.json)",
+>       "Edit(.claude/settings.json)",
+>       "Write(.claude/settings.json)"
 >     ]
 >   }
 > }
