@@ -133,3 +133,36 @@ scaffolding), then checkpoint on it.
 - Prefer dispatching discrete chunks of work via background sub-agents rather
   than trying to hold a 12-hour context on the main thread. Main thread
   coordinates; sub-agents do the long work.
+
+## Gate-A preflight
+
+Before launching any autonomous run, the orchestrator verifies every external
+resource the run's Definition of Done will need — the LLM credential (one
+minimal call), the Docker daemon and stack health, disk headroom, GitHub
+Actions billing — with the cheapest check available. Thirty seconds of checks
+versus a wasted validate phase. A run whose smoke needs a resource the
+orchestrator has not verified does not launch.
+
+## Resuming a run
+
+The harness caches every completed `agent()` result by its exact prompt and
+options. Resuming with identical inputs replays cached results — including a
+*failed* validate verdict. Always pass a fresh `resumeNonce` (folded into the
+Validate prompt) and, when a previous attempt left a branch behind,
+`existingBranch` so the implementer continues it instead of starting over.
+Uncommitted work in a dead agent's worktree is not on any branch; recover it
+by committing in that worktree before resuming, then remove the worktree.
+
+## Which runner: single-feature-run vs federated-run
+
+- **`single-feature-run`** — one feature, its own branch and its own PR. Run
+  them one at a time.
+- **`federated-run`** — several features fanned out concurrently into one
+  shared dev branch, each reviewed on its own, integrated, then one batch PR.
+
+Two single-feature-runs launched in parallel are a federated run without its
+integration step — same concurrency, no shared-branch discipline. Choose the
+runner by how the work should land (one PR each vs. one batch PR), not for
+resource safety: *neither* runner serializes shared resources (federated fans
+out concurrently too). Resource safety comes from the Gate-A preflight and the
+in-run preflight, in either runner.

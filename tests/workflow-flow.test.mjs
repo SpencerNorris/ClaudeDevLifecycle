@@ -332,6 +332,20 @@ test("single: M1 — a gateCommands object missing a key falls back to the docum
   assert.match(g.prompt, /repository's unit tests, lint and type-check/, "falls back to the documented-commands branch");
 });
 
+test("single: the Validate agent runs on sonnet by default", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  const v = run.prompts.find((p) => p.label === "validate-and-dod");
+  assert.ok(v, "validate never dispatched: " + (run.error && run.error.message));
+  assert.equal(v.opts.model, "sonnet");
+});
+
+test("single: args.validateModel overrides the Validate agent's model", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, validateModel: "opus" }, HAPPY);
+  const v = run.prompts.find((p) => p.label === "validate-and-dod");
+  assert.ok(v, "validate never dispatched: " + (run.error && run.error.message));
+  assert.equal(v.opts.model, "opus");
+});
+
 test("single: DoD schema requires per-case results with a carried flag", async () => {
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
   const v = run.prompts.find((p) => p.label === "validate-and-dod");

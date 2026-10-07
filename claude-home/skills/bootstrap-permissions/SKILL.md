@@ -259,9 +259,7 @@ session that a future session then inherits. Deny that path unconditionally:
 "permissions": {
   "deny": [
     "Edit(.claude/settings.local.json)",
-    "Write(.claude/settings.local.json)",
-    "Edit(.claude/settings.json)",
-    "Write(.claude/settings.json)"
+    "Edit(.claude/settings.json)"
   ]
 }
 ```
@@ -297,7 +295,7 @@ allow-list edit could accidentally widen scope:
 Call these out in the proposal so the user understands deny is a hard block,
 not a prompt gate.
 
-**Chicken-and-egg warning:** Once `Edit/Write(.claude/settings.local.json)` is
+**Chicken-and-egg warning:** Once `Edit(.claude/settings.local.json)` is
 denied, Claude cannot repair the settings file itself. If a bad entry gets in
 (e.g., a malformed PATH, a typo in a glob), the user has to fix it manually.
 Get the settings right on the first write. In particular:
@@ -347,9 +345,7 @@ Output something like:
 >     ],
 >     "deny": [
 >       "Edit(.claude/settings.local.json)",
->       "Write(.claude/settings.local.json)",
->       "Edit(.claude/settings.json)",
->       "Write(.claude/settings.json)"
+>       "Edit(.claude/settings.json)"
 >     ]
 >   }
 > }
@@ -406,17 +402,19 @@ Propose it, then on confirmation:
    is a shared policy flag: committing it makes the opt-in travel with the repo so
    anyone who clones inherits the protection.
 
-3. **Set GitHub server-side branch protection if available** — the only
-   *unbypassable* guarantee. If the repo has a GitHub remote and `gh` is
-   authenticated, offer to run:
+3. **Set GitHub server-side branch protection where the plan supports it** — the
+   only *unbypassable* guarantee. If the repo has a GitHub remote and `gh` is
+   authenticated, offer this call for PUBLIC repos (available on GitHub's free
+   plan), and for private repos only where the account's plan supports protected
+   branches:
    ```bash
    gh api --method PUT repos/{owner}/{repo}/branches/main/protection --input - <<'JSON'
    { "required_pull_request_reviews": {"required_approving_review_count": 1},
      "required_status_checks": null, "enforce_admins": true, "restrictions": null }
    JSON
    ```
-   If it fails because the plan doesn't offer protected branches on private repos
-   (common on free/pro), say so plainly: **the local hooks are then the actual
+   If it is unavailable (e.g. a private repo on a plan without protected
+   branches), say so plainly: **the local hooks are then the actual
    main-protection, so the opt-in in step 1 is essential, not optional.** Be honest
    that the hooks stop *accidental* pushes to `main` but are not adversary-proof —
    a deliberate `git push --no-verify` or an unset `core.hooksPath` bypasses them.
