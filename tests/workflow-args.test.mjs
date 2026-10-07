@@ -114,3 +114,11 @@ for (const [name, scriptPath] of Object.entries(SCRIPTS)) {
     assert.equal(repo, home, `${base} drifted between claude-home/ and claude-repo/`);
   });
 }
+
+for (const name of ["adversarial-reviewer.md", "correctness-reviewer.md", "security-reviewer.md", "performance-reviewer.md"]) {
+  test(`${name}: claude-home and claude-repo copies are byte-identical`, async () => {
+    const home = await readFile(new URL(`claude-home/agents/${name}`, `file://${repoRoot}`), "utf8");
+    const repo = await readFile(new URL(`claude-repo/.claude/agents/${name}`, `file://${repoRoot}`), "utf8");
+    assert.equal(repo, home, `${name} drifted between claude-home/ and claude-repo/`);
+  });
+}

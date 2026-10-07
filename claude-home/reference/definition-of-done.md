@@ -59,6 +59,19 @@ gate.
 Cost is not an excuse. The marginal cost of one broken-on-arrival
 feature is higher than the cost of a thorough smoke test.
 
+**Incremental re-smoke after a fix.** The first validate pass on a lineage
+runs every case. After a failure, the next pass diffs the files changed
+since the failing commit (`git diff --name-only <lastSmokeSha>..<headSha>`)
+and re-runs only the cases that failed last pass, plus every case whose
+`files` overlap that diff; every other case is marked `carried: true` and
+keeps its last real result — the stack stays up between attempts, and images
+are rebuilt only if a dependency manifest, a Dockerfile, a compose file, or
+an nginx template changed. Fallback to a full smoke instead, with the report
+saying why: the diff touches one of those infra files, or any file that no
+failed case's `files` names — which is also what happens when a failed case
+reports no `files` at all, since then nothing it names can ever match and
+every changed file counts as unnamed.
+
 ## Smoke test surface by type
 
 ### Frontend / UI
@@ -157,6 +170,14 @@ Every "done" report follows this structure:
 
 ## Smoke test transcript
 <the actual transcript — commands, outputs, screenshots, edge cases covered>
+
+| id | name | pass | carried | detail | files |
+|---|---|---|---|---|---|
+| AC1 | <case name> | true/false | false | <one-line result> | <source files this case exercises> |
+| E1 | <derived edge case> | true/false | true | carried from `<sha>` | <files> |
+
+**Carried forward (not re-run this pass):**
+- <case id> — carried from `<sha>`
 
 ## Docs updated
 - <files>
