@@ -152,7 +152,7 @@ Validate prompt) and, when a previous attempt left a branch behind,
 `existingBranch` so the implementer continues it instead of starting over.
 After a pause for an externally blocked smoke case, also pass the `pausedSmoke`
 value printed in the pause comment (`args.pausedSmoke`; a feature's `pausedSmoke`
-in `federated-run`) so the resumed validate re-runs only the blocked cases (earlier stages replay from the cache; the nonce is folded in only from the paused validate on; a pause during the confirmation smoke resumes as the full confirmation; a replay that cannot land on the paused validate pauses as "resume diverged").
+in `federated-run`) so the resumed validate re-runs only the blocked cases (a chain, so a run resumed more than once still replays; earlier stages replay from the cache; the nonce is folded in only from the paused validate on; a pause during the confirmation smoke resumes as the full confirmation; a replay that cannot land on the paused validate pauses as "resume diverged").
 Uncommitted work in a dead agent's worktree is not on any branch; recover it
 by committing in that worktree before resuming, then remove the worktree.
 

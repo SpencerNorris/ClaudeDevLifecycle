@@ -444,16 +444,20 @@ const CASE_BLOCKER_KINDS = ["infra", "credentials", "billing", "usage_limit"];
 function caseBlockerKind(c) {
   return CASE_BLOCKER_KINDS.includes(c.blocker) ? c.blocker : "infra";
 }
-/** "pass" | "fail" | "blocked" for a whole validate result. A red suite or any failed
- * case is a fail (blocked cases are listed alongside); blocked-only is a pause. */
+/** What a whole validate result means: "fail" (a failed case, a red suite the agent blames
+ * on the code, or a smoke that did not pass without any case explaining why), "blocked"
+ * (blocked cases and nothing failed: pause, print pausedSmoke), "external" (an external
+ * top-level blocker with no blocked case to resume: a preflight stop, or ambiguity)
+ * or "pass". A failed case always wins; blocked cases are then listed alongside. */
 function smokeOutcome(dod) {
   const cases = dod.cases || [];
   const failed = cases.filter((c) => c.status === "fail");
   const blocked = cases.filter((c) => c.status === "blocked");
-  if (failed.length || !dod.gatesPass) return { kind: "fail", failed, blocked };
-  if (blocked.length) return { kind: "blocked", failed, blocked };
-  // No case failed or is blocked, yet the agent says the smoke did not pass: believe it.
-  return { kind: dod.smokeAllPass ? "pass" : "fail", failed, blocked };
+  if (dod.blocker === "ambiguity") return { kind: "external", failed, blocked };
+  if (failed.length) return { kind: "fail", failed, blocked };
+  if (blocked.length && !(!dod.gatesPass && dod.blocker === "code")) return { kind: "blocked", failed, blocked };
+  if (isExternalBlocker(dod.blocker)) return { kind: "external", failed, blocked };
+  return { kind: !dod.gatesPass || !dod.smokeAllPass ? "fail" : "pass", failed, blocked };
 }
 function renderBlockedCases(blocked) {
   return blocked.map((c) => "- " + c.id + " " + c.name + " — [" + caseBlockerKind(c) + "] " + (c.blockerDetail || "no detail given")).join("\n");
@@ -463,66 +467,83 @@ function renderLastCases(cases) {
   if (!cases.length) return "(none recorded)";
   return cases.map((c) => "- " + c.id + " " + c.name + ": " + c.status + (c.files && c.files.length ? " (files: " + c.files.join(", ") + ")" : "")).join("\n");
 }
-/** The pause text for a blocked-only smoke: the blocked cases, and the exact
- * `pausedSmoke` value (commit, pass and whether it was the confirmation) that
- * makes the resumed validate re-run only the blocked cases. */
-function blockedPauseContext(blocked, cases, sha, pass, confirm, resumeWhere) {
-  const paused = { sha, pass, confirm, nonce: resumeNonce, cases: cases.map((c) => ({ id: c.id, name: c.name, status: c.status, ...(c.files && c.files.length ? { files: c.files } : {}) })) };
+/** The pause text for a blocked smoke: the blocked cases, and the exact `pausedSmoke`
+ * value that makes the resumed validate re-run only them. `pausedSmoke` is a CHAIN of
+ * points, one per pause across successive resumes: the points this run inherited plus
+ * the new one, so a run resumed from this value can rebuild every earlier prompt.
+ * Each point is the validate it paused on (commit, pass, confirm), the nonce that
+ * validate's prompt carried, and the case results to seed the resumed validate with. */
+function blockedPauseContext(blocked, cases, sha, pass, confirm, resumeWhere, inherited, nonce) {
+  const point = { sha, pass, confirm, nonce, cases: cases.map((c) => ({ id: c.id, name: c.name, status: c.status, ...(c.files && c.files.length ? { files: c.files } : {}) })) };
+  const paused = { points: [...inherited, point] };
   return "Smoke blocked by an external condition at " + sha + " (pass " + pass + (confirm ? ", confirmation smoke" : "") + "): " + blocked.length + " case(s) could not run. This is NOT a code failure and no validate slot was spent.\n" +
     renderBlockedCases(blocked) +
     "\nAfter fixing the condition, resume with a fresh resumeNonce and pass " + resumeWhere + " = " + JSON.stringify(paused) + " so the validate re-runs only the blocked cases.";
 }
-/** Validate an operator-supplied `pausedSmoke` ({ sha, pass, confirm, cases }); null when absent, an error naming `where` when malformed. */
+/** Validate an operator-supplied `pausedSmoke` chain ({ points: [...] }, or the older single-point
+ * shape, which is normalised to a one-point chain); null when absent, an error naming `where` when malformed. */
 function validPausedSmoke(raw, where) {
   if (raw === undefined || raw === null) return null;
-  const ok = raw && typeof raw === "object" && /^[0-9a-f]{40}$/.test(raw.sha || "") && Number.isInteger(raw.pass) && raw.pass >= 1 && typeof raw.confirm === "boolean" && (raw.nonce === undefined || typeof raw.nonce === "string") &&
-    Array.isArray(raw.cases) && raw.cases.length > 0 &&
-    raw.cases.every((c) => c && typeof c.id === "string" && c.id && typeof c.name === "string" && c.name && CASE_STATUSES.includes(c.status)) &&
-    raw.cases.some((c) => c.status === "blocked");
-  if (!ok) throw new Error(where + " must be { sha: <40 hex>, pass: <int>, confirm: <bool>, nonce: <string>, cases: [{ id, name, status, files? }] } with at least one blocked case — paste the value from the pause comment.");
-  return { sha: raw.sha, pass: raw.pass, confirm: raw.confirm, nonce: raw.nonce || "", cases: raw.cases.map((c) => ({ id: c.id, name: c.name, status: c.status, files: Array.isArray(c.files) ? c.files : [] })) };
+  const shape = "must be { points: [{ sha: <40 hex>, pass: <int>, confirm: <bool>, nonce: <string>, cases: [{ id, name, status, files? }] }, …] }, ascending by (pass, confirm), each with at least one blocked case — paste the value from the pause comment.";
+  const pts = raw && typeof raw === "object" ? (Array.isArray(raw.points) ? raw.points : [raw]) : [];
+  const okPoint = (q) => q && typeof q === "object" && /^[0-9a-f]{40}$/.test(q.sha || "") && Number.isInteger(q.pass) && q.pass >= 1 && typeof q.confirm === "boolean" &&
+    (q.nonce === undefined || typeof q.nonce === "string") && Array.isArray(q.cases) && q.cases.length > 0 &&
+    q.cases.every((c) => c && typeof c.id === "string" && c.id && typeof c.name === "string" && c.name && CASE_STATUSES.includes(c.status)) &&
+    q.cases.some((c) => c.status === "blocked");
+  const key = (q) => q.pass * 2 + (q.confirm ? 1 : 0);
+  if (!pts.length || !pts.every(okPoint) || !pts.every((q, i) => i === 0 || key(q) > key(pts[i - 1]))) throw new Error(where + " " + shape);
+  return { points: pts.map((q) => ({ sha: q.sha, pass: q.pass, confirm: q.confirm, nonce: q.nonce || "", cases: q.cases.map((c) => ({ id: c.id, name: c.name, status: c.status, files: Array.isArray(c.files) ? c.files : [] })) })) };
 }
-/** Has the run reached (or passed) the validate the smoke paused on? Pass numbers
- * increase through the loop; within a pass the confirmation follows the smoke. */
-function pausedPointReached(ctx, pass, confirm) {
-  const p = ctx.pausedSmoke;
-  return !!p && (pass > p.pass || (pass === p.pass && (confirm || !p.confirm)));
+/** The next chain point the replay has not yet landed on (null when none, or no chain). */
+function nextPausedPoint(ctx) {
+  const c = ctx.pausedSmoke;
+  return c && ctx.pausedApplied < c.points.length ? c.points[ctx.pausedApplied] : null;
 }
-/** The resume nonce for a validate prompt. With a pausedSmoke, validates BEFORE the
- * paused point keep their original prompts so they replay from the harness cache
- * (a nonce there would re-run a real smoke at an old commit); the paused point and
- * everything after get the fresh nonce. Without one, every validate gets it. */
-function validateResumeTag(ctx, pass, confirm) {
-  if (ctx.pausedSmoke && !pausedPointReached(ctx, pass, confirm)) {
-    // Before the point: the prompt the paused run itself used (its own nonce, "" for a first run).
-    return ctx.pausedSmoke.nonce ? ", resume " + ctx.pausedSmoke.nonce : "";
+function reachedPoint(q, pass, confirm) {
+  return pass > q.pass || (pass === q.pass && (confirm || !q.confirm));
+}
+/** The nonce a validate prompt carries. A chain makes the replay's prompts rebuildable:
+ * validates before point 0 carry point 0's nonce (the run that first paused), validates
+ * between point i-1 and point i carry point i's nonce (the run that paused again), and
+ * validates from the last point on carry this run's fresh resumeNonce. Without a chain,
+ * a sibling feature of a resumed batch replays with the batch's original nonce
+ * (ctx.siblingNonce), otherwise every validate carries the fresh nonce. */
+function validateNonceFor(ctx, pass, confirm) {
+  const c = ctx.pausedSmoke;
+  if (c) {
+    const q = c.points.find((pt) => !reachedPoint(pt, pass, confirm));
+    return q ? q.nonce : resumeNonce;
   }
-  return resumeNonce ? ", resume " + resumeNonce : "";
+  return ctx.siblingNonce !== null && ctx.siblingNonce !== undefined ? ctx.siblingNonce : resumeNonce;
 }
-/** A resume that does not land exactly on the paused validate is a divergence: the
+function validateResumeTag(ctx, pass, confirm) {
+  const n = validateNonceFor(ctx, pass, confirm);
+  return n ? ", resume " + n : "";
+}
+/** A resume that does not land exactly on the next paused validate is a divergence: the
  * seed must never be dropped silently. Returns the pause message, or null. */
 function pausedSmokeDivergence(ctx, pass, confirm) {
-  const p = ctx.pausedSmoke;
-  if (!p || ctx.pausedSmokeApplied) return null;
-  if (p.sha === ctx.headSha && p.pass === pass && p.confirm === confirm) return null; // applied by runValidate
-  if (!pausedPointReached(ctx, pass, confirm)) return null; // still replaying earlier stages
-  return "Resume diverged: pausedSmoke names pass " + p.pass + (p.confirm ? " (confirmation smoke)" : "") + " at " + p.sha + ", but the replay reached the validate at pass " + pass + (confirm ? " (confirmation smoke)" : "") + " on " + ctx.headSha + ". The earlier stages did not replay identically (inputs changed, or the cache missed). Nothing was run; re-run from the original run or drop pausedSmoke.";
+  const q = nextPausedPoint(ctx);
+  if (!q) return null;
+  if (q.sha === ctx.headSha && q.pass === pass && q.confirm === confirm) return null; // applied by runValidate
+  if (!reachedPoint(q, pass, confirm)) return null; // still replaying earlier stages
+  return "Resume diverged: pausedSmoke point " + (ctx.pausedApplied + 1) + " names pass " + q.pass + (q.confirm ? " (confirmation smoke)" : "") + " at " + q.sha + ", but the replay reached the validate at pass " + pass + (confirm ? " (confirmation smoke)" : "") + " on " + ctx.headSha + ". The earlier stages did not replay identically (inputs changed, or the cache missed). Nothing was run; re-run from the original run or drop pausedSmoke.";
 }
-/** After the loop: a pausedSmoke that was never applied means the replay never reached its validate. */
+/** After the loop: a chain point never landed on means the replay never reached its validate. */
 function pausedSmokeUnreached(ctx) {
-  const p = ctx.pausedSmoke;
-  if (!p || ctx.pausedSmokeApplied) return null;
-  return "Resume diverged: the run finished its validate/review loop without ever reaching the paused validate (pass " + p.pass + (p.confirm ? ", confirmation smoke" : "") + " at " + p.sha + "). Nothing was shipped; re-run from the original run or drop pausedSmoke.";
+  const q = nextPausedPoint(ctx);
+  if (!q) return null;
+  return "Resume diverged: the run finished its validate/review loop without ever reaching paused validate " + (ctx.pausedApplied + 1) + " (pass " + q.pass + (q.confirm ? ", confirmation smoke" : "") + " at " + q.sha + "). Nothing was shipped; re-run from the original run or drop pausedSmoke.";
 }
-/** On a resume at the exact validate the smoke paused on, seed the incremental state from the paused case list (once). */
+/** On a resume at the exact validate the next chain point paused on, seed the incremental state from its case list. */
 function applyPausedSmoke(ctx, pass, confirm) {
-  const p = ctx.pausedSmoke;
-  if (!p || ctx.pausedSmokeApplied || p.sha !== ctx.headSha || p.pass !== pass || p.confirm !== confirm) return;
-  ctx.pausedSmokeApplied = true;
-  ctx.lastCases = p.cases;
+  const q = nextPausedPoint(ctx);
+  if (!q || q.sha !== ctx.headSha || q.pass !== pass || q.confirm !== confirm) return;
+  ctx.pausedApplied++;
+  ctx.lastCases = q.cases;
   ctx.failedCases = [];
-  ctx.blockedCases = p.cases.filter((c) => c.status === "blocked");
-  ctx.lastSmokeSha = p.sha;
+  ctx.blockedCases = q.cases.filter((c) => c.status === "blocked");
+  ctx.lastSmokeSha = q.sha;
 }
 
 async function runReviewPanel(runLabel, ctx, base, evidence, mode) {
@@ -1030,7 +1051,7 @@ async function runValidate(ctx, pass, confirm = false) {
   return agent(
     "AUTONOMOUS single-feature run, VALIDATE phase — pass " + pass + validateResumeTag(ctx, pass, confirm) + " (spec D4; reference/definition-of-done.md). " +
       "Work in the run worktree `" + ctx.runWorktree + "` at commit " + ctx.headSha + " (verify with `git rev-parse HEAD`). Never checkout, rebuild or write to the main working tree.\n" +
-      "STEP 0 — PREFLIGHT, before running a single test: an LLM key via ONE minimal call; the Docker daemon (`docker info` within 15 s) and service health; at least 10 GB free on Docker's volume; GitHub reachability if the smoke needs it. On any failure STOP and return gatesPass=false, smokeAllPass=false, blocker = 'infra' | 'credentials' | 'billing' | 'usage_limit', blockerDetail = the exact error, and report every case with status 'blocked' carrying that same blocker and detail. Never retry a preflight, never attempt host recovery, never read credentials.\n" +
+      "STEP 0 — PREFLIGHT, before running a single test: an LLM key via ONE minimal call; the Docker daemon (`docker info` within 15 s) and service health; at least 10 GB free on Docker's volume; GitHub reachability if the smoke needs it. On any failure STOP and return gatesPass=false, smokeAllPass=false, blocker = 'infra' | 'credentials' | 'billing' | 'usage_limit', blockerDetail = the exact error, and report every case with status 'blocked' (never 'fail') carrying that same blocker and detail. Never retry a preflight, never attempt host recovery, never read credentials.\n" +
       "STEP 1 — integration + regression suites at this commit. Unit, lint and type-check already passed (" + ctx.gateSummary + "); copy those into `tests`.\n" +
       "STEP 2 — " + scope + "the happy path, EVERY named edge case in the issue/spec (or derive and list them), and the plausible failure modes for the surface touched, against the running system. " +
       "REPORT EVERY SMOKE CASE in `cases` with a stable id (AC1, AC2, … in the issue's order, then E1… for derived edges and F1… for failure modes), `status`, a one-line `detail`, and the source files the case exercises in `files`. " +
@@ -1155,7 +1176,8 @@ const ctx = {
   lastCases: [],           // every case's last result, handed to the next incremental smoke
   incrementalBase: null,
   pausedSmoke: validPausedSmoke(RUN_ARGS.pausedSmoke, "args.pausedSmoke"), // operator-supplied resume state (#17)
-  pausedSmokeApplied: false,
+  pausedApplied: 0,           // how many chain points the replay has landed on
+  siblingNonce: null,
   lastSmokeSha: null,
   prevReviewSha: null,
   lastCritique: null,       // the standing critique when prevReviewSha === headSha (no new commit landed)
@@ -1343,17 +1365,17 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
     if (diverged) { ctx.failureContext = diverged; await pauseForHuman("Validate", "infra", ctx); }
     dod = await runValidate(ctx, pass, confirming);
     if (!dod) { ctx.failureContext = "VALIDATE agent died without returning a DoD result."; await pauseForHuman("Validate", "usage_limit", ctx); }
-    // A top-level external blocker is honoured only for a preflight stop (no case ran to pass or fail), or ambiguity;
-    // otherwise the case statuses decide (M1).
-    if (isExternalBlocker(dod.blocker) && (dod.blocker === "ambiguity" || !(dod.cases || []).some((c) => c.status === "pass" || c.status === "fail"))) { ctx.failureContext = dod.blockerDetail || dod.failureContext || ("blocker=" + dod.blocker); await pauseForHuman("Validate", dod.blocker, ctx); }
     const outcome = smokeOutcome(dod);
+    // A failed case always counts; otherwise blocked cases pause with a resume value; an external
+    // top-level blocker with nothing to resume (a preflight stop, or ambiguity) pauses directly (M1/N2).
+    if (outcome.kind === "external") { ctx.failureContext = dod.blockerDetail || dod.failureContext || ("blocker=" + dod.blocker); await pauseForHuman("Validate", dod.blocker, ctx); }
     ctx.lastCases = dod.cases || [];
     ctx.lastSmokeSha = ctx.headSha;
     ctx.failedCases = outcome.failed;
     ctx.blockedCases = outcome.blocked;
     if (outcome.kind === "blocked") {
       // #17: nothing for an implementer to fix — pause; the resume re-runs the blocked cases.
-      ctx.failureContext = blockedPauseContext(outcome.blocked, ctx.lastCases, ctx.headSha, pass, confirming, "args.pausedSmoke");
+      ctx.failureContext = blockedPauseContext(outcome.blocked, ctx.lastCases, ctx.headSha, pass, confirming, "args.pausedSmoke", ctx.pausedSmoke ? ctx.pausedSmoke.points.slice(0, ctx.pausedApplied) : [], validateNonceFor(ctx, pass, confirming));
       await pauseForHuman("Validate", caseBlockerKind(outcome.blocked[0]), ctx);
     }
     if (outcome.kind === "fail") {
