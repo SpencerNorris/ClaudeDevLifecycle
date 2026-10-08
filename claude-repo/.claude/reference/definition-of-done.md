@@ -72,6 +72,14 @@ failed case's `files` names — which is also what happens when a failed case
 reports no `files` at all, since then nothing it names can ever match and
 every changed file counts as unnamed.
 
+**Carried cases appear only in intermediate reports; the report at the shipped
+commit re-runs every case.** `files` is the smoke agent's own account of what a
+case exercised, not a dependency analysis, so an incremental smoke cannot prove
+that a fix left the carried cases intact. When the last validate carried any
+case, one full confirmation smoke runs at the commit that ships (stack still up;
+rebuild and reseed only if their inputs changed). That report has no `carried`
+rows, and it is the one the merge is judged on.
+
 ## Smoke test surface by type
 
 ### Frontend / UI
@@ -186,7 +194,7 @@ Every "done" report follows this structure:
 | E1 | <derived edge case> | pass/fail | true | carried from `<sha>` | <files> |
 | E2 | <case that could not run> | PENDING (blocked) | false | <reason, e.g. call budget exhausted> | <files> |
 
-**Carried forward (not re-run this pass):**
+**Carried forward (not re-run this pass):** *(intermediate reports only; absent from the report at the shipped commit)*
 - <case id> — carried from `<sha>`
 
 ## Docs updated

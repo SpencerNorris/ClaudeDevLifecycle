@@ -1095,11 +1095,15 @@ async function runGates(ctx, pass) {
 
 /** The validate stage in ONE feature's run worktree: full on the first smoke
  * of a lineage; incremental after a smoke failure (spec D4). */
-async function runValidate(ctx, pass) {
+async function runValidate(ctx, pass, confirm = false) {
   applyPausedSmoke(ctx);
+  if (!ctx.stackBaseSha) ctx.stackBaseSha = ctx.headSha; // the stack is first built for this commit
   const named = (cs) => cs.map((c) => c.id + " (" + c.name + (c.files && c.files.length ? "; files " + c.files.join(", ") : "") + ")").join("; ");
   const incremental = (ctx.failedCases.length > 0 || ctx.blockedCases.length > 0) && ctx.lastSmokeSha;
-  const scope = incremental
+  const scope = confirm
+    ? "CONFIRMATION SMOKE (spec D4): the earlier validates on this lineage were incremental and carried cases at their last results, so commit " + ctx.headSha + " has not been smoked in full. Run EVERY case now — the full happy path, every named edge and the failure modes, exactly as a first smoke would — and report each one freshly: no case may be `carried`, and there is no 'Carried forward' list. " +
+      "The stack is still up from the earlier smokes: do not tear it down. Rebuild images only if `git diff --name-only " + ctx.stackBaseSha + ".." + ctx.headSha + "` touches a dependency manifest, a Dockerfile, a compose file or an nginx template; reseed only if it touches the seed script or its inputs. This report is the evidence the merge is judged on.\n"
+    : incremental
     ? "INCREMENTAL SMOKE (spec D4): the smoke at " + ctx.lastSmokeSha + " left these results:\n" + renderLastCases(ctx.lastCases) + "\n" +
       (ctx.failedCases.length ? "FAILED, re-run: " + named(ctx.failedCases) + ". " : "") +
       (ctx.blockedCases.length ? "BLOCKED last time (not run: an external resource was unavailable; the operator has since fixed it — a failed preflight still stops you), re-run: " + named(ctx.blockedCases) + ". " : "") +
@@ -1116,7 +1120,7 @@ async function runValidate(ctx, pass) {
       "REPORT EVERY SMOKE CASE in `cases` with a stable id (AC1, AC2, … in the issue's order, then E1… for derived edges and F1… for failure modes), `status`, a one-line `detail`, and the source files the case exercises in `files`. " +
       "`status` is 'pass'; 'fail' ONLY when the change broke the case; or 'blocked' when the case could not run because an external resource went away mid-smoke (network/VPN drop, a rate limit or call budget hit, a daemon that died after preflight) — then set the case's `blocker` (infra | credentials | billing | usage_limit) and `blockerDetail`. Never report an un-run case as 'fail'.\n" +
       "Top-level blocker: 'ambiguity' when acceptance criteria cannot be derived, a preflight kind when STEP 0 failed, otherwise 'code' when a case failed or 'none'. Blocked cases are decided from their own `status`, not from this field.\n" +
-      "Produce the DoD report with the exact structure from reference/definition-of-done.md (## Changes / ## Tests / ## Smoke test transcript / ## Docs updated / ## Follow-ups). Under ## Smoke test transcript render the re-run cases as a table and, if any, a separate list 'Carried forward (not re-run this pass)'; render every blocked case as PENDING with its reason. Under ## Follow-ups list every accepted deferral from the review panel.\n" +
+      "Produce the DoD report with the exact structure from reference/definition-of-done.md (## Changes / ## Tests / ## Smoke test transcript / ## Docs updated / ## Follow-ups). Under ## Smoke test transcript render the re-run cases as a table" + (confirm ? " (this is a confirmation smoke: every case is re-run, so there is no carried list)" : " and, if any, a separate list 'Carried forward (not re-run this pass)'") + "; render every blocked case as PENDING with its reason. Under ## Follow-ups list every accepted deferral from the review panel.\n" +
       "ACCEPTED DEFERRALS (list each under ## Follow-ups): " + (ctx.acceptedDeferrals.length ? ctx.acceptedDeferrals.map((d) => d.id + ": " + d.reason).join("; ") : "none") + "\n" +
       "gatesPass is true ONLY if every suite passed; smokeAllPass ONLY if every case in `cases` has status 'pass'.\n\n" +
       "Feature: " + ctx.title + "\nLinked issue: " + ctx.issue,
@@ -1195,6 +1199,7 @@ function makeFeatureCtx(feature) {
     lastFilesTouched: [],     // the implementer's own claimed file list, relayed the same way
     failedCases: [],
     blockedCases: [],        // cases the last smoke could not run for an external reason (#17)
+    stackBaseSha: null,      // the commit the smoke stack was first built for (#15)
     lastCases: [],           // every case's last result, handed to the next incremental smoke
     pausedSmoke: validPausedSmoke(feature.pausedSmoke), // operator-supplied resume state (#17)
     pausedSmokeApplied: false,
@@ -1387,26 +1392,43 @@ async function processFeature(feature, ctx, devBranchName) {
       }
 
       // ---- SMOKE (spec D4): once after review; incremental after a failure ----
-      const dod = await runValidate(ctx, pass);
-      if (!dod) await ctx.fail("Validate", "usage_limit", "VALIDATE agent died without returning a DoD result.");
-      if (isExternalBlocker(dod.blocker)) await ctx.fail("Validate", dod.blocker, dod.blockerDetail || dod.failureContext || ("blocker=" + dod.blocker));
-      const outcome = smokeOutcome(dod);
-      ctx.lastCases = dod.cases || [];
-      ctx.lastSmokeSha = ctx.headSha;
-      ctx.failedCases = outcome.failed;
-      ctx.blockedCases = outcome.blocked;
-      if (outcome.kind === "blocked") {
-        // #17: nothing for an implementer to fix — pause this feature; re-run it with its pausedSmoke.
-        await ctx.fail("Validate", caseBlockerKind(outcome.blocked[0]), blockedPauseContext(outcome.blocked, ctx.lastCases, ctx.headSha, "this feature's `pausedSmoke`"));
+      let dod = null;
+      let smokeFailed = false;
+      // Incremental smokes are triage for the loop (spec D4); when the last one
+      // carried cases, one FULL confirmation smoke at this commit is the
+      // evidence the merge rests on (#15). It is judged exactly like any other
+      // validate: a failure there spends a validate slot and returns to implement.
+      for (let confirming = false; ; confirming = true) {
+        dod = await runValidate(ctx, pass, confirming);
+        if (!dod) await ctx.fail("Validate", "usage_limit", "VALIDATE agent died without returning a DoD result.");
+        if (isExternalBlocker(dod.blocker)) await ctx.fail("Validate", dod.blocker, dod.blockerDetail || dod.failureContext || ("blocker=" + dod.blocker));
+        const outcome = smokeOutcome(dod);
+        ctx.lastCases = dod.cases || [];
+        ctx.lastSmokeSha = ctx.headSha;
+        ctx.failedCases = outcome.failed;
+        ctx.blockedCases = outcome.blocked;
+        if (outcome.kind === "blocked") {
+          // #17: nothing for an implementer to fix — pause this feature; re-run it with its pausedSmoke.
+          await ctx.fail("Validate", caseBlockerKind(outcome.blocked[0]), blockedPauseContext(outcome.blocked, ctx.lastCases, ctx.headSha, "this feature's `pausedSmoke`"));
+        }
+        if (outcome.kind === "fail") {
+          validateFailures++;
+          ctx.failureContext = (confirming ? "Confirmation smoke" : "Smoke") + " failed (code failure " + validateFailures + " of " + K + ", pass " + pass + "):\n" + smokeEvidence(dod, outcome.failed, outcome.blocked);
+          if (validateFailures === K) await ctx.fail("Validate", "code", ctx.failureContext, validateFailures);
+          if (ctx.lastReimplementNote) { ctx.failureContext += "\n" + ctx.lastReimplementNote; ctx.lastReimplementNote = null; }
+          await reimplement(ctx, "reimplement-after-validate", "back to IMPLEMENT after a " + (confirming ? "CONFIRMATION " : "") + "SMOKE failure", ctx.failureContext, pass);
+          smokeFailed = true;
+          break;
+        }
+        const carried = ctx.lastCases.some((c) => c.carried);
+        if (confirming && carried) {
+          // The contract forbids carried rows in a confirmation: it is not the evidence it must be.
+          await ctx.fail("Validate", "infra", "The confirmation smoke at " + ctx.headSha + " reported carried cases (" + ctx.lastCases.filter((c) => c.carried).map((c) => c.id).join(", ") + "); a confirmation must re-run every case. Re-run the validate.");
+        }
+        if (confirming || !carried) break;
+        log(ctx.tag + ": incremental smoke green with carried cases at " + ctx.headSha + "; running the full confirmation smoke.");
       }
-      if (outcome.kind === "fail") {
-        validateFailures++;
-        ctx.failureContext = "Smoke failed (code failure " + validateFailures + " of " + K + ", pass " + pass + "):\n" + smokeEvidence(dod, outcome.failed, outcome.blocked);
-        if (validateFailures === K) await ctx.fail("Validate", "code", ctx.failureContext, validateFailures);
-        if (ctx.lastReimplementNote) { ctx.failureContext += "\n" + ctx.lastReimplementNote; ctx.lastReimplementNote = null; }
-        await reimplement(ctx, "reimplement-after-validate", "back to IMPLEMENT after a SMOKE failure", ctx.failureContext, pass);
-        continue;
-      }
+      if (smokeFailed) continue;
       dodReport = dod.report + "\n\n" + ctx.reviewVerdictSection;
       reviewed = true;
       log(ctx.tag + ": gates, review and smoke green at " + ctx.headSha + ".");
