@@ -385,7 +385,9 @@ async function runReviewPanel(runLabel, ctx, base, evidence, mode) {
       ctx.minorsDeferred.map((d) => "- " + d.id + ": " + d.reason).join("\n")
     : "";
   const diffInstruction = delta
-    ? "Review ONLY `git diff " + mode.prevSha + ".." + ctx.headSha + "`, in the run worktree `" + ctx.runWorktree + "` (checked out at " + ctx.headSha + ")."
+    ? (mode.emptyDiff
+      ? "EMPTY DIFF (pass " + mode.pass + "): the implementer committed nothing since " + mode.prevSha + " (`git diff " + mode.prevSha + ".." + ctx.headSha + "` is empty) and instead returned the deferrals below with reasons. There is no code to re-review: judge ONLY those deferrals (`deferralVerdicts`) and, from the implementer's stated reasoning in its summary, whether each of your open findings still stands. Return a finding `resolved` as 'addressed' only if that reasoning shows the finding does not stand (cite why); otherwise leave it 'unaddressed'. Run workspace: `" + ctx.runWorktree + "` (checked out at " + ctx.headSha + ")."
+      : "Review ONLY `git diff " + mode.prevSha + ".." + ctx.headSha + "`, in the run worktree `" + ctx.runWorktree + "` (checked out at " + ctx.headSha + ").")
     : "DERIVE GROUND TRUTH YOURSELF — reconstruct the real diff with `git diff " + base + "..." + ctx.headSha + "` in the run worktree `" + ctx.runWorktree + "` and read the actual code; do not trust any self-reported file list.";
   const results = (await parallel(selectedReviewers().map((agentType) => () => {
     const open = Object.values(ctx.findings[agentType] || {}).filter((f) => f.status !== "addressed");
@@ -815,6 +817,7 @@ async function cleanupWorktrees(ctx, phaseName, tag) {
 async function reimplement(label, why, context, pass) {
   await detachWorktrees(ctx, "Implement", pass, "before-implement");
   const before = ctx.headSha;
+  ctx.noCommitDeferred = false;
   const r = await agent(
     "AUTONOMOUS run, " + why + " (master-design-doc.md §5/§8) — pass " + pass + ". Fix the ROOT CAUSE — do NOT weaken tests, skip cases, or shim. " +
       "Fix in-scope bugs in this change (no-shed); file only genuinely orthogonal bugs as cross-linked GH issues.\n" +
@@ -846,6 +849,10 @@ async function reimplement(label, why, context, pass) {
   ctx.minorsDeferred = ctx.minorsDeferred.concat(r.minorsDeferred || []);
   if (r.headSha === before) {
     // Nothing was committed: the next pass would replay cached gate results forever.
+    // If the implementer returned deferrals it is pushing back with a reason
+    // (#14): the loop sends them to the panel on an empty diff instead of
+    // letting the previous critique stand.
+    ctx.noCommitDeferred = (r.minorsDeferred || []).length > 0;
     ctx.lastReimplementNote = "reimplement produced no new commit at " + before + "; the previous failure stands";
     return r;
   }
@@ -995,6 +1002,7 @@ const ctx = {
   prUrl: null,
   failureContext: "",
   lastReimplementNote: null,
+  noCommitDeferred: false,  // the last reimplement committed nothing but returned deferrals (#14)
 };
 
 // ---------------------------------------------------------------------------
@@ -1122,11 +1130,13 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
   // ---- REVIEW (spec D2/D3): before the smoke; delta mode whenever a prior round exists ----
   if (reviewPassedAt !== ctx.headSha) {
     phase("Review");
-    if (ctx.prevReviewSha === ctx.headSha && ctx.lastCritique) {
+    const noNewCommit = ctx.prevReviewSha === ctx.headSha && !!ctx.lastCritique;
+    if (noNewCommit && !(ctx.noCommitDeferred && ctx.minorsDeferred.length)) {
       // The standing critique is the verdict: nothing new to review — the last
-      // reimplement produced no new commit, so re-dispatching the panel here
-      // would be a byte-identical prompt (cache collision) reviewing a
-      // degenerate `git diff SHA..SHA`. The prior rejection still stands.
+      // reimplement produced no new commit AND no deferrals, so re-dispatching
+      // the panel here would be a byte-identical prompt (cache collision)
+      // reviewing a degenerate `git diff SHA..SHA`. The prior rejection still
+      // stands. (With deferrals returned, the panel judges them instead: #14.)
       reviewRejects++;
       ctx.failureContext = "Review panel's standing rejection at " + ctx.headSha + " (reject " + reviewRejects + " of " + K + ", pass " + pass + "):\n" + ctx.lastCritique;
       if (reviewRejects === K) await escalate("Review", reviewRejects, ctx);
@@ -1134,7 +1144,7 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
       await reimplement("reimplement-after-review", "back to IMPLEMENT after a REVIEW reject", ctx.failureContext, pass);
       continue;
     }
-    const mode = ctx.prevReviewSha ? { prevSha: ctx.prevReviewSha } : "full";
+    const mode = noNewCommit ? { prevSha: ctx.prevReviewSha, emptyDiff: true, pass } : ctx.prevReviewSha ? { prevSha: ctx.prevReviewSha } : "full";
     const review = await runReviewPanel("AUTONOMOUS single-feature run,", ctx, devBranch,
       "GATE RESULTS at " + ctx.headSha + " (pass " + pass + "): " + ctx.gateSummary +
         "\nIMPLEMENTER'S CLAIMS (verify against the diff): summary: " + ctx.lastImplementSummary +
@@ -1142,6 +1152,7 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
       mode);
     if (review.incomplete) { ctx.failureContext = review.critique; await pauseForHuman("Review", "usage_limit", ctx); }
     ctx.prevReviewSha = ctx.headSha; // any later round is a delta over this commit
+    ctx.noCommitDeferred = false; // consumed: the panel has now judged the pushback
     if (!review.pass) {
       reviewRejects++;
       ctx.failureContext = "Review panel rejected (reject " + reviewRejects + " of " + K + ", pass " + pass + ", by: " + review.rejectedBy + "):\n" + review.critique;

@@ -875,3 +875,82 @@ test("federated: a dead per-feature cleanup agent during an escalation pauses th
   assert.ok(!run.labels.includes("root-cause:feat:f2"), "no root-cause diagnosis after the pause: " + run.labels.join(", "));
   assert.ok(run.labels.includes("integrate"), "the batch still integrates f1: " + run.labels.join(", "));
 });
+
+// ---------------------------------------------------------------------------
+// #14 — a no-commit reimplement that returns deferrals goes to the panel
+// (delta mode, empty diff) instead of standing as a rejection.
+// ---------------------------------------------------------------------------
+
+const REJECT_F1 = { verdict: "reject", summary: "bad", findings: [{ id: "F1", severity: "blocking", category: "correctness", detail: "no ON CONFLICT", location: "src/x.py:10" }] };
+const PUSHBACK = [{ id: "D1", reason: "F1 is mistaken: the insert is already idempotent" }];
+
+test("single: #14 — a no-commit reimplement that returns deferrals dispatches the panel on an empty diff and the review passes when the seats accept", async () => {
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0 ? REJECT_F1
+      : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed", note: "pushback is right" }], deferralVerdicts: [{ id: "D1", accepted: true, note: "ok" }] }),
+    "correctness-reviewer": (p, o, n) => (n === 0 ? R.reviewPass : { ...R.reviewPass, deferralVerdicts: [{ id: "D1", accepted: true }] }),
+    "reimplement-after-review": { ...R.implement /* same sha: nothing committed */, minorsDeferred: PUSHBACK },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.equal(run.labels.filter((l) => l === "reimplement-after-review").length, 1, "no second implement dispatch");
+  const adv = run.prompts.filter((p) => p.label === "adversarial-reviewer");
+  const cor = run.prompts.filter((p) => p.label === "correctness-reviewer");
+  assert.equal(adv.length, 2, "the panel is dispatched for the deferral round");
+  assert.equal(cor.length, 2);
+  assert.match(adv[1].prompt, /DELTA REVIEW/);
+  assert.match(adv[1].prompt, /EMPTY DIFF/);
+  assert.match(adv[1].prompt, /pass 2/, "the pass number keeps the prompt out of the cache");
+  assert.match(adv[1].prompt, /F1 .*no ON CONFLICT/, "the seat still sees its own open finding");
+  assert.match(adv[1].prompt, /DEFERRALS CLAIMED[\s\S]*D1/);
+  assert.equal(run.labels.filter((l) => l === "validate-and-dod").length, 1, "review passed at the same commit, so the loop proceeds to the smoke");
+  assert.equal(run.labels.filter((l) => l === "gates").length, 2);
+  assert.equal(run.result.prUrl, R.ship.prUrl);
+});
+
+test("single: #14 — a no-commit reimplement without deferrals is still a standing rejection and dispatches no panel", async () => {
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0 ? REJECT_F1 : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed", note: "fixed" }] }),
+    "reimplement-after-review": (p, o, n) => (n === 0 ? R.implement : { ...R.implement, headSha: SHA_B }),
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const idx = run.labels.reduce((a, l, i) => (l === "reimplement-after-review" ? a.concat(i) : a), []);
+  assert.equal(idx.length, 2);
+  assert.equal(run.labels.slice(0, idx[1]).filter((l) => l === "adversarial-reviewer").length, 1, "no panel between the two reimplements");
+  const re = run.prompts.filter((p) => p.label === "reimplement-after-review");
+  assert.match(re[1].prompt, /standing rejection/);
+});
+
+test("single: #14 — a rejected deferral on the empty-diff round counts one reject and returns to implement", async () => {
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0 ? REJECT_F1
+      : n === 1 ? { verdict: "reject", summary: "not orthogonal", findings: [], deferralVerdicts: [{ id: "D1", accepted: false, note: "this is in scope" }] }
+      : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed" }, { id: "deferral-D1", status: "addressed" }] }),
+    "correctness-reviewer": (p, o, n) => (n === 1 ? { ...R.reviewPass, deferralVerdicts: [{ id: "D1", accepted: true }] } : R.reviewPass),
+    "reimplement-after-review": (p, o, n) => (n === 0 ? { ...R.implement, minorsDeferred: PUSHBACK } : { ...R.implement, headSha: SHA_B }),
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.filter((p) => p.label === "reimplement-after-review");
+  assert.equal(re.length, 2, "the rejected deferral goes back to implement");
+  assert.match(re[1].prompt, /Review panel rejected \(reject 2 of 3/, "one more reject counted for the empty-diff round");
+  assert.match(re[1].prompt, /deferral rejected: this is in scope/, "the rejected deferral is a closable finding in the critique");
+  assert.equal(run.result.prUrl, R.ship.prUrl);
+});
+
+test("federated: #14 — a no-commit reimplement that returns deferrals dispatches the panel on an empty diff", async () => {
+  const scenario = { ...FED_HAPPY,
+    [T + "adversarial-reviewer"]: (p, o, n) => (n === 0 ? REJECT_F1
+      : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed" }], deferralVerdicts: [{ id: "D1", accepted: true }] }),
+    [T + "correctness-reviewer"]: (p, o, n) => (n === 0 ? R.reviewPass : { ...R.reviewPass, deferralVerdicts: [{ id: "D1", accepted: true }] }),
+    [T + "reimplement-after-review"]: { ...R.implement, minorsDeferred: PUSHBACK },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const adv = run.prompts.filter((p) => p.label === T + "adversarial-reviewer");
+  assert.equal(adv.length, 2);
+  assert.match(adv[1].prompt, /EMPTY DIFF/);
+  assert.equal(run.labels.filter((l) => l === T + "reimplement-after-review").length, 1);
+  assert.equal(run.result.shipped, true);
+});
