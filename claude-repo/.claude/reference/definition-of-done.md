@@ -140,6 +140,15 @@ result an autonomous run produces carries a `blocker`:
 no root-cause diagnosis, no reimplementation, no retries. The run resumes
 (`resumeFromRunId` with a fresh `resumeNonce`) once the condition is fixed.
 
+**A case can be blocked mid-smoke.** A resource that passed preflight can still
+go away during the smoke (a VPN drop, an exhausted call budget, a dead daemon).
+The case is then reported `status: blocked` with a blocker kind and detail,
+never `fail`: it renders as PENDING with its reason, a smoke whose only
+non-passing cases are blocked pauses the run without spending the retry budget,
+and a smoke that also has real failures counts the failure and lists the blocked
+cases separately as not run. The pause comment carries the `pausedSmoke` value
+that makes the resumed validate re-run only the blocked cases.
+
 **Preflight comes first.** Before a single test runs, verify every external
 resource the acceptance criteria depend on with the cheapest possible check:
 an LLM key via one minimal call through the app's configured provider, the
@@ -171,10 +180,11 @@ Every "done" report follows this structure:
 ## Smoke test transcript
 <the actual transcript — commands, outputs, screenshots, edge cases covered>
 
-| id | name | pass | carried | detail | files |
+| id | name | status | carried | detail | files |
 |---|---|---|---|---|---|
-| AC1 | <case name> | true/false | false | <one-line result> | <source files this case exercises> |
-| E1 | <derived edge case> | true/false | true | carried from `<sha>` | <files> |
+| AC1 | <case name> | pass/fail | false | <one-line result> | <source files this case exercises> |
+| E1 | <derived edge case> | pass/fail | true | carried from `<sha>` | <files> |
+| E2 | <case that could not run> | PENDING (blocked) | false | <reason, e.g. call budget exhausted> | <files> |
 
 **Carried forward (not re-run this pass):**
 - <case id> — carried from `<sha>`
