@@ -15,6 +15,7 @@ export const SCRIPTS = {
 export const SHA_A = "a".repeat(40);
 export const SHA_B = "b".repeat(40);
 export const SHA_C = "c".repeat(40);
+export const SHA_D = "d".repeat(40);
 
 /** Minimal schema check mirroring what the harness enforces on agent() results. */
 function checkSchema(schema, value, label) {
@@ -130,7 +131,7 @@ export const R = {
   dodPass: {
     gatesPass: true, smokeAllPass: true, blocker: "none", report: "## Changes\n…",
     tests: { unit: "12 passed", integration: "3 passed", regression: "ok", lint: "clean", typecheck: "clean" },
-    cases: [{ id: "AC1", name: "happy path", pass: true }],
+    cases: [{ id: "AC1", name: "happy path", status: "pass" }],
   },
   ship: { pushed: true, prUrl: "https://github.com/owner/repo/pull/2", blocker: "none" },
   cleanup: { ok: true, removed: [] },
@@ -511,8 +512,9 @@ test("single: a seat that says 'pass' with a blocking finding in its own ledger 
 test("single: a smoke failure re-runs the failed cases and reviews the delta, not the full diff", async () => {
   const scenario = { ...HAPPY,
     "validate-and-dod": (p, o, n) => (n === 0
-      ? { ...R.dodPass, smokeAllPass: false, failureContext: "AC3 failed", cases: [{ id: "AC1", name: "a", pass: true }, { id: "AC3", name: "fuseki down", pass: false, files: ["src/api/graph.py"] }] }
-      : { ...R.dodPass, cases: [{ id: "AC1", name: "a", pass: true, carried: true }, { id: "AC3", name: "fuseki down", pass: true }] }),
+      ? { ...R.dodPass, smokeAllPass: false, failureContext: "AC3 failed", cases: [{ id: "AC1", name: "a", status: "pass" }, { id: "AC3", name: "fuseki down", status: "fail", files: ["src/api/graph.py"] }] }
+      : n === 1 ? { ...R.dodPass, cases: [{ id: "AC1", name: "a", status: "pass", carried: true }, { id: "AC3", name: "fuseki down", status: "pass" }] }
+      : R.dodPass /* the confirmation smoke (#15): every case re-run */),
     "reimplement-after-validate": { ...R.implement, headSha: SHA_B },
   };
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
@@ -874,4 +876,542 @@ test("federated: a dead per-feature cleanup agent during an escalation pauses th
   assert.ok(!run.labels.includes("escalate:feat:f2"), "the pause already stands — no escalation comment on top of it: " + run.labels.join(", "));
   assert.ok(!run.labels.includes("root-cause:feat:f2"), "no root-cause diagnosis after the pause: " + run.labels.join(", "));
   assert.ok(run.labels.includes("integrate"), "the batch still integrates f1: " + run.labels.join(", "));
+});
+
+// ---------------------------------------------------------------------------
+// #14 — a no-commit reimplement that returns deferrals goes to the panel
+// (delta mode, empty diff) instead of standing as a rejection.
+// ---------------------------------------------------------------------------
+
+const REJECT_F1 = { verdict: "reject", summary: "bad", findings: [{ id: "F1", severity: "blocking", category: "correctness", detail: "no ON CONFLICT", location: "src/x.py:10" }] };
+const PUSHBACK = [{ id: "D1", reason: "F1 is mistaken: the insert is already idempotent" }];
+
+test("single: #14 — a no-commit reimplement that returns deferrals dispatches the panel on an empty diff and the review passes when the seats accept", async () => {
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0 ? REJECT_F1
+      : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed", note: "pushback is right" }], deferralVerdicts: [{ id: "D1", accepted: true, note: "ok" }] }),
+    "correctness-reviewer": (p, o, n) => (n === 0 ? R.reviewPass : { ...R.reviewPass, deferralVerdicts: [{ id: "D1", accepted: true }] }),
+    "reimplement-after-review": { ...R.implement /* same sha: nothing committed */, minorsDeferred: PUSHBACK },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.equal(run.labels.filter((l) => l === "reimplement-after-review").length, 1, "no second implement dispatch");
+  const adv = run.prompts.filter((p) => p.label === "adversarial-reviewer");
+  const cor = run.prompts.filter((p) => p.label === "correctness-reviewer");
+  assert.equal(adv.length, 2, "the panel is dispatched for the deferral round");
+  assert.equal(cor.length, 2);
+  assert.match(adv[1].prompt, /DELTA REVIEW/);
+  assert.match(adv[1].prompt, /EMPTY DIFF/);
+  assert.match(adv[1].prompt, /pass 2/, "the pass number keeps the prompt out of the cache");
+  assert.match(adv[1].prompt, /F1 .*no ON CONFLICT/, "the seat still sees its own open finding");
+  assert.match(adv[1].prompt, /DEFERRALS CLAIMED[\s\S]*D1/);
+  assert.equal(run.labels.filter((l) => l === "validate-and-dod").length, 1, "review passed at the same commit, so the loop proceeds to the smoke");
+  assert.equal(run.labels.filter((l) => l === "gates").length, 2);
+  assert.equal(run.result.prUrl, R.ship.prUrl);
+});
+
+test("single: #14 — a no-commit reimplement without deferrals is still a standing rejection and dispatches no panel", async () => {
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0 ? REJECT_F1 : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed", note: "fixed" }] }),
+    "reimplement-after-review": (p, o, n) => (n === 0 ? R.implement : { ...R.implement, headSha: SHA_B }),
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const idx = run.labels.reduce((a, l, i) => (l === "reimplement-after-review" ? a.concat(i) : a), []);
+  assert.equal(idx.length, 2);
+  assert.equal(run.labels.slice(0, idx[1]).filter((l) => l === "adversarial-reviewer").length, 1, "no panel between the two reimplements");
+  const re = run.prompts.filter((p) => p.label === "reimplement-after-review");
+  assert.match(re[1].prompt, /standing rejection/);
+});
+
+test("single: #14 — a rejected deferral on the empty-diff round counts one reject and returns to implement", async () => {
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0 ? REJECT_F1
+      : n === 1 ? { verdict: "reject", summary: "not orthogonal", findings: [], deferralVerdicts: [{ id: "D1", accepted: false, note: "this is in scope" }] }
+      : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed" }, { id: "deferral-D1", status: "addressed" }] }),
+    "correctness-reviewer": (p, o, n) => (n === 1 ? { ...R.reviewPass, deferralVerdicts: [{ id: "D1", accepted: true }] } : R.reviewPass),
+    "reimplement-after-review": (p, o, n) => (n === 0 ? { ...R.implement, minorsDeferred: PUSHBACK } : { ...R.implement, headSha: SHA_B }),
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.filter((p) => p.label === "reimplement-after-review");
+  assert.equal(re.length, 2, "the rejected deferral goes back to implement");
+  assert.match(re[1].prompt, /Review panel rejected \(reject 2 of 3/, "one more reject counted for the empty-diff round");
+  assert.match(re[1].prompt, /deferral rejected: this is in scope/, "the rejected deferral is a closable finding in the critique");
+  assert.equal(run.result.prUrl, R.ship.prUrl);
+});
+
+test("federated: #14 — a no-commit reimplement that returns deferrals dispatches the panel on an empty diff", async () => {
+  const scenario = { ...FED_HAPPY,
+    [T + "adversarial-reviewer"]: (p, o, n) => (n === 0 ? REJECT_F1
+      : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed" }], deferralVerdicts: [{ id: "D1", accepted: true }] }),
+    [T + "correctness-reviewer"]: (p, o, n) => (n === 0 ? R.reviewPass : { ...R.reviewPass, deferralVerdicts: [{ id: "D1", accepted: true }] }),
+    [T + "reimplement-after-review"]: { ...R.implement, minorsDeferred: PUSHBACK },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const adv = run.prompts.filter((p) => p.label === T + "adversarial-reviewer");
+  assert.equal(adv.length, 2);
+  assert.match(adv[1].prompt, /EMPTY DIFF/);
+  assert.equal(run.labels.filter((l) => l === T + "reimplement-after-review").length, 1);
+  assert.equal(run.result.shipped, true);
+});
+
+// ---------------------------------------------------------------------------
+// #18 — forward failed cases' detail/files, dod.failureContext AND the case
+// list, and the capped smoke transcript to the re-implementer (and gates output
+// on the gates failure path).
+// ---------------------------------------------------------------------------
+
+const TRANSCRIPT = "$ curl -s localhost:8080/graph\nHTTP 502 from fuseki\nTRACE-MARKER-123";
+const failingDod = (extra = {}) => ({
+  ...R.dodPass, smokeAllPass: false, failureContext: "AC3 failed: fuseki unreachable",
+  report: "## Changes\n- x\n\n## Tests\n- ok\n\n## Smoke test transcript\n" + TRANSCRIPT + "\n\n## Docs updated\n- none\n",
+  cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC3", name: "fuseki down", status: "fail", detail: "502 from /graph on cold start", files: ["src/api/graph.py"] }],
+  ...extra,
+});
+const smokeThenGreen = (first) => (p, o, n) => (n === 0 ? first : { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC3", name: "fuseki down", status: "pass" }] });
+
+test("single: #18 — a failed smoke's reimplement prompt carries each failed case's detail and files, dod.failureContext, and the transcript", async () => {
+  const scenario = { ...HAPPY, "validate-and-dod": smokeThenGreen(failingDod()), "reimplement-after-validate": { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-validate");
+  assert.match(re.prompt, /AC3 fuseki down/);
+  assert.match(re.prompt, /502 from \/graph on cold start/, "case detail forwarded");
+  assert.match(re.prompt, /src\/api\/graph\.py/, "case files forwarded");
+  assert.match(re.prompt, /AC3 failed: fuseki unreachable/, "dod.failureContext forwarded in addition to the list");
+  assert.match(re.prompt, /TRACE-MARKER-123/, "transcript section forwarded");
+  assert.doesNotMatch(re.prompt, /## Docs updated/, "only the transcript section, not the rest of the report");
+  assert.doesNotMatch(re.prompt, /## Changes/);
+});
+
+test("single: #18 — a long transcript is truncated at 8 KB with a visible marker", async () => {
+  const big = "x".repeat(20000);
+  const dod = failingDod({ report: "## Smoke test transcript\n" + big + "\nTAIL-MARKER\n## Docs updated\n- none" });
+  const scenario = { ...HAPPY, "validate-and-dod": smokeThenGreen(dod), "reimplement-after-validate": { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-validate");
+  assert.match(re.prompt, /transcript truncated/i);
+  assert.doesNotMatch(re.prompt, /TAIL-MARKER/);
+  assert.ok(re.prompt.length < 8192 + 6000, "bounded: " + re.prompt.length);
+  assert.ok((re.prompt.match(/x/g) || []).length >= 8000, "the head of the transcript is kept");
+});
+
+test("single: #18 — with no dod.failureContext the case list still reaches the implementer; with no transcript section nothing is invented", async () => {
+  const dod = failingDod({ failureContext: undefined, report: "## Changes\n- x" });
+  delete dod.failureContext;
+  const scenario = { ...HAPPY, "validate-and-dod": smokeThenGreen(dod), "reimplement-after-validate": { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-validate");
+  assert.match(re.prompt, /AC3 fuseki down — 502 from \/graph/);
+  assert.doesNotMatch(re.prompt, /SMOKE TRANSCRIPT/);
+});
+
+test("single: #18 — a gates failure forwards the unit/lint/typecheck summaries and the failing output", async () => {
+  const scenario = { ...HAPPY,
+    "gates": (p, o, n) => (n === 0 ? { ...R.gatesPass, pass: false, unit: "2 failed: test_a, test_b", lint: "clean", typecheck: "3 errors", failureContext: "FAIL test_a: assert 1 == 2" } : R.gatesPass),
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-validate");
+  assert.match(re.prompt, /unit: 2 failed: test_a, test_b/);
+  assert.match(re.prompt, /typecheck: 3 errors/);
+  assert.match(re.prompt, /FAIL test_a: assert 1 == 2/);
+});
+
+test("federated: #18 — a failed smoke's reimplement prompt carries case detail, files, failureContext and the transcript", async () => {
+  const scenario = { ...FED_HAPPY, [T + "validate-and-dod"]: smokeThenGreen(failingDod()), [T + "reimplement-after-validate"]: { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === T + "reimplement-after-validate");
+  assert.match(re.prompt, /502 from \/graph on cold start/);
+  assert.match(re.prompt, /src\/api\/graph\.py/);
+  assert.match(re.prompt, /AC3 failed: fuseki unreachable/);
+  assert.match(re.prompt, /TRACE-MARKER-123/);
+});
+
+// ---------------------------------------------------------------------------
+// #17 — an externally blocked smoke case is not a code failure. Per-case
+// status pass|fail|blocked, decided in code.
+// ---------------------------------------------------------------------------
+
+const blockedDod = (extra = {}) => ({
+  ...R.dodPass, smokeAllPass: false, blocker: "code" /* the agent mislabels it, as in the real run */,
+  report: "## Smoke test transcript\nAC2 PENDING: call budget exhausted\n",
+  cases: [
+    { id: "AC1", name: "happy path", status: "pass", files: ["src/a.py"] },
+    { id: "AC2", name: "live call", status: "blocked", blocker: "usage_limit", blockerDetail: "external call budget exhausted", files: ["src/live.py"] },
+  ],
+  ...extra,
+});
+
+test("single: #17 — a blocked-only smoke pauses for a human without spending a validate slot or reimplementing", async () => {
+  const scenario = { ...HAPPY, "validate-and-dod": blockedDod(), "pause-for-human": "posted" };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
+  assert.ok(!run.labels.includes("reimplement-after-validate"), "nothing to fix: no reimplement");
+  assert.ok(!run.labels.includes("escalate-to-issue") && !run.labels.includes("root-cause-diagnosis"), "a pause, not an escalation");
+  assert.equal(run.labels.filter((l) => l === "validate-and-dod").length, 1);
+  const pause = run.prompts.find((p) => p.label === "pause-for-human");
+  assert.ok(pause, "pause-for-human dispatched");
+  assert.match(pause.prompt, /usage_limit blocker/, "the case's own blocker kind is used");
+  assert.match(pause.prompt, /AC2/);
+  assert.match(pause.prompt, /external call budget exhausted/);
+  assert.doesNotMatch(pause.prompt, /pausedSmoke/, "no resume record is printed (tracked in #20)");
+  assert.match(pause.prompt, /resume the run as for any other pause/);
+  assert.match(pause.prompt, new RegExp(SHA_A));
+  assert.ok(run.labels.indexOf("cleanup-worktrees") < run.labels.indexOf("pause-for-human"));
+});
+
+test("single: #17 — a mixed fail+blocked smoke counts one failure and lists the blocked case separately", async () => {
+  const mixed = blockedDod({ cases: [
+    { id: "AC1", name: "happy path", status: "fail", detail: "500 on /x", files: ["src/a.py"] },
+    { id: "AC2", name: "live call", status: "blocked", blocker: "infra", blockerDetail: "VPN dropped", files: ["src/live.py"] },
+  ] });
+  const scenario = { ...HAPPY,
+    "validate-and-dod": (p, o, n) => (n === 0 ? mixed : { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC2", name: "live call", status: "pass" }] }),
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-validate");
+  assert.match(re.prompt, /code failure 1 of 3/);
+  assert.match(re.prompt, /FAILED CASES:\n- AC1 happy path — 500 on \/x/);
+  const [failedPart, notRunPart] = re.prompt.split(/NOT RUN/);
+  assert.ok(notRunPart, "a NOT RUN section exists");
+  assert.match(notRunPart, /AC2[\s\S]*VPN dropped/);
+  assert.match(notRunPart, /do not chase/i);
+  assert.doesNotMatch(failedPart, /AC2 live call/, "the blocked case is not listed as a failure");
+  // the next validate is incremental over BOTH the failed and the blocked case
+  const v = run.prompts.filter((p) => p.label === "validate-and-dod");
+  assert.match(v[1].prompt, /INCREMENTAL SMOKE/);
+  assert.match(v[1].prompt, /AC1/);
+  assert.match(v[1].prompt, /BLOCKED[\s\S]*AC2/);
+});
+
+
+
+test("single: #17 — a blocked case with no recognised blocker kind pauses as infra", async () => {
+  const dod = blockedDod({ cases: [{ id: "AC2", name: "live call", status: "blocked" }] });
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": dod, "pause-for-human": "posted" });
+  assert.equal(run.error && run.error.name, "EscalationStop");
+  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /infra blocker/);
+});
+
+test("single: #17 — DoD schema: per-case status enum with blocker kind and detail", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  const props = run.prompts.find((p) => p.label === "validate-and-dod").opts.schema.properties.cases.items;
+  assert.deepEqual(props.properties.status.enum, ["pass", "fail", "blocked"]);
+  assert.ok(props.required.includes("status"));
+  assert.ok(!("pass" in props.properties), "status replaces pass");
+  assert.ok("blocker" in props.properties && "blockerDetail" in props.properties);
+});
+
+test("federated: #17 — a blocked-only smoke pauses that feature without a reimplement", async () => {
+  const scenario = { ...FED_HAPPY, [T + "validate-and-dod"]: blockedDod(), "pause-feature-for-human:f1": "posted" };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.ok(!run.labels.includes(T + "reimplement-after-validate"));
+  assert.ok(run.labels.includes("pause-feature-for-human:f1"));
+  const pause = run.prompts.find((p) => p.label === "pause-feature-for-human:f1");
+  assert.match(pause.prompt, /AC2/);
+  assert.doesNotMatch(pause.prompt, /pausedSmoke/);
+  assert.equal(run.result.shipped, false);
+});
+
+
+// ---------------------------------------------------------------------------
+// #15 — one full confirmation smoke at the ship commit whenever the last
+// validate carried cases.
+// ---------------------------------------------------------------------------
+
+const FAIL_AC3 = { ...R.dodPass, smokeAllPass: false, failureContext: "AC3 failed",
+  cases: [{ id: "AC1", name: "happy path", status: "pass", files: ["src/a.py"] }, { id: "AC3", name: "fuseki down", status: "fail", detail: "502", files: ["src/api/graph.py"] }] };
+const CARRIED_GREEN = { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass", carried: true }, { id: "AC3", name: "fuseki down", status: "pass" }] };
+const FULL_GREEN = { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC3", name: "fuseki down", status: "pass" }], report: "## Smoke test transcript\nCONFIRMED-FULL\n" };
+
+test("single: #15 — a passing incremental smoke is followed by one full confirmation smoke at headSha before ship", async () => {
+  const scenario = { ...HAPPY,
+    "validate-and-dod": (p, o, n) => [FAIL_AC3, CARRIED_GREEN, FULL_GREEN][n],
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const v = run.prompts.filter((p) => p.label === "validate-and-dod");
+  assert.equal(v.length, 3, "full, incremental, confirmation");
+  assert.match(v[1].prompt, /INCREMENTAL SMOKE/);
+  assert.match(v[2].prompt, /CONFIRMATION SMOKE/);
+  assert.match(v[2].prompt, new RegExp(SHA_B));
+  assert.match(v[2].prompt, /stack is still up/i, "the stack-up instruction");
+  assert.match(v[2].prompt, /rebuild[\s\S]*only if/i);
+  assert.match(v[2].prompt, /reseed[\s\S]*only if/i);
+  assert.match(v[2].prompt, /EVERY case/);
+  assert.match(v[2].prompt, /no case may be `carried`/i, "no carried rows in the contract");
+  assert.doesNotMatch(v[2].prompt, /marking cases you did not re-run `carried: true`/);
+  assert.doesNotMatch(v[2].prompt, /INCREMENTAL SMOKE/);
+  // the evidence Gate B merges on is the confirmation's report, with no carried rows
+  const ship = run.prompts.find((p) => p.label === "push-and-open-pr");
+  assert.match(ship.prompt, /CONFIRMED-FULL/);
+  assert.equal(run.labels.indexOf("push-and-open-pr") > run.labels.lastIndexOf("validate-and-dod"), true);
+  assert.equal(run.result.prUrl, R.ship.prUrl);
+});
+
+test("single: #15 — a run whose first smoke passes runs no confirmation smoke", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.equal(run.labels.filter((l) => l === "validate-and-dod").length, 1);
+});
+
+test("single: #15 — an incremental smoke that carried nothing (the agent fell back to full) needs no confirmation", async () => {
+  const scenario = { ...HAPPY,
+    "validate-and-dod": (p, o, n) => (n === 0 ? FAIL_AC3 : FULL_GREEN),
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.equal(run.labels.filter((l) => l === "validate-and-dod").length, 2);
+});
+
+test("single: #15 — a failing confirmation smoke spends a validate slot, returns to implement, and the next validate is incremental against its failed cases", async () => {
+  const confirmFail = { ...FAIL_AC3, failureContext: "AC1 regressed", cases: [{ id: "AC1", name: "happy path", status: "fail", detail: "broke after the AC3 fix", files: ["src/a.py"] }, { id: "AC3", name: "fuseki down", status: "pass" }] };
+  const scenario = { ...HAPPY,
+    "validate-and-dod": (p, o, n) => [FAIL_AC3, CARRIED_GREEN, confirmFail, { ...CARRIED_GREEN, report: "## Smoke test transcript\nINC2\n" }, FULL_GREEN][n],
+    "reimplement-after-validate": (p, o, n) => ({ ...R.implement, headSha: n === 0 ? SHA_B : SHA_C }),
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.filter((p) => p.label === "reimplement-after-validate");
+  assert.equal(re.length, 2);
+  assert.match(re[1].prompt, /Confirmation smoke failed \(code failure 2 of 3/);
+  assert.match(re[1].prompt, /broke after the AC3 fix/, "the confirmation's failed-case detail is forwarded");
+  const v = run.prompts.filter((p) => p.label === "validate-and-dod");
+  assert.equal(v.length, 5);
+  assert.match(v[3].prompt, /INCREMENTAL SMOKE/, "incremental again after the confirmation failure");
+  assert.match(v[3].prompt, /FAILED, re-run: AC1/);
+  assert.match(v[4].prompt, /CONFIRMATION SMOKE/);
+  assert.match(v[4].prompt, new RegExp(SHA_C));
+  assert.notEqual(v[2].prompt, v[4].prompt, "no cache collision between confirmations");
+});
+
+test("single: #15 — a confirmation failure shares the K budget: the third failing validate escalates", async () => {
+  const confirmFail = { ...FAIL_AC3, cases: [{ id: "AC1", name: "happy path", status: "fail", detail: "x" }] };
+  const scenario = { ...HAPPY,
+    "validate-and-dod": (p, o, n) => [FAIL_AC3, CARRIED_GREEN, confirmFail, confirmFail][n],
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B },
+    "root-cause-diagnosis": "x", "escalate-to-issue": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...scenario, "reimplement-after-validate": (p, o, n) => ({ ...R.implement, headSha: n === 0 ? SHA_B : SHA_C }), "validate-and-dod": (p, o, n) => [FAIL_AC3, CARRIED_GREEN, confirmFail, { ...confirmFail, failureContext: "again" }][n] });
+  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
+  assert.ok(run.labels.includes("root-cause-diagnosis"));
+});
+
+test("single: #15 — a blocked-only confirmation smoke pauses like any other blocked smoke", async () => {
+  const blockedConfirm = { ...R.dodPass, smokeAllPass: false, cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC3", name: "fuseki down", status: "blocked", blocker: "infra", blockerDetail: "VPN dropped" }] };
+  const scenario = { ...HAPPY,
+    "validate-and-dod": (p, o, n) => [FAIL_AC3, CARRIED_GREEN, blockedConfirm][n],
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B }, "pause-for-human": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
+  assert.equal(run.labels.filter((l) => l === "reimplement-after-validate").length, 1, "no reimplement for the blocked confirmation");
+  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /VPN dropped/);
+});
+
+test("single: #15 — a confirmation smoke that reports carried rows is rejected, not shipped", async () => {
+  const scenario = { ...HAPPY,
+    "validate-and-dod": (p, o, n) => [FAIL_AC3, CARRIED_GREEN, CARRIED_GREEN][n],
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B }, "pause-for-human": "posted",
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
+  assert.ok(!run.labels.includes("push-and-open-pr"), "never ships on a confirmation that carried cases");
+  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /carried/);
+});
+
+
+test("federated: #15 — a passing incremental smoke is followed by a full confirmation smoke", async () => {
+  const scenario = { ...FED_HAPPY,
+    [T + "validate-and-dod"]: (p, o, n) => [FAIL_AC3, CARRIED_GREEN, FULL_GREEN][n],
+    [T + "reimplement-after-validate"]: { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const v = run.prompts.filter((p) => p.label === T + "validate-and-dod");
+  assert.equal(v.length, 3);
+  assert.match(v[2].prompt, /CONFIRMATION SMOKE/);
+  assert.match(v[2].prompt, /no case may be `carried`/i);
+  assert.equal(run.result.shipped, true);
+  assert.match(run.prompts.find((p) => p.label === "push-and-open-pr").prompt, /CONFIRMED-FULL/, "the PR body carries the confirmation's report");
+});
+
+// ---------------------------------------------------------------------------
+// PR #19 review fixes: B1 (resume at a later pass), B2 (federated input check),
+// M1 (top-level blocker vs case statuses), M2 (stale reimplement note),
+// M3 (incremental omitting cases).
+// ---------------------------------------------------------------------------
+
+const BLOCKED_AT_B = { ...R.dodPass, smokeAllPass: false, blocker: "code",
+  cases: [{ id: "AC1", name: "happy path", status: "pass", files: ["src/a.py"] }, { id: "AC3", name: "live call", status: "blocked", blocker: "infra", blockerDetail: "VPN dropped", files: ["src/live.py"] }] };
+const failAt = (detail) => ({ ...R.dodPass, smokeAllPass: false, failureContext: detail,
+  cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC3", name: "live call", status: "fail", detail }] });
+
+
+
+
+
+
+
+
+
+test("single: M1 — a top-level external blocker does not override case statuses: a real failure is counted and the blocked case listed", async () => {
+  const dod = { ...R.dodPass, smokeAllPass: false, blocker: "usage_limit", blockerDetail: "x",
+    cases: [{ id: "AC1", name: "happy path", status: "fail", detail: "500" }, { id: "AC2", name: "live", status: "blocked", blocker: "infra", blockerDetail: "VPN" }] };
+  const scenario = { ...HAPPY, "validate-and-dod": (p, o, n) => (n === 0 ? dod : { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC2", name: "live", status: "pass" }] }),
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B }, "pause-for-human": "posted" };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.match(run.prompts.find((p) => p.label === "reimplement-after-validate").prompt, /code failure 1 of 3[\s\S]*NOT RUN[\s\S]*VPN/);
+});
+
+test("single: M1 — a blocked-only smoke with a mislabelled top-level external blocker still pauses", async () => {
+  const dod = { ...BLOCKED_AT_B, blocker: "usage_limit" };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": dod, "pause-for-human": "posted" });
+  assert.equal(run.error && run.error.name, "EscalationStop");
+  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /AC2|VPN/);
+});
+
+test("single: M1 — a preflight stop with every case blocked is caught by the blocked branch (blocked-case pause wording)", async () => {
+  const dod = { ...R.dodPass, gatesPass: false, smokeAllPass: false, blocker: "infra", blockerDetail: "docker daemon down",
+    cases: [{ id: "AC1", name: "happy path", status: "blocked", blocker: "infra", blockerDetail: "docker daemon down" }] };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": dod, "pause-for-human": "posted" });
+  assert.equal(run.error && run.error.name, "EscalationStop");
+  const prompt = run.prompts.find((p) => p.label === "pause-for-human").prompt;
+  assert.match(prompt, /Smoke blocked by an external condition/, "blockedPauseContext wording: the blocked branch fired");
+  assert.match(prompt, /docker daemon down/);
+  assert.ok(!run.labels.includes("reimplement-after-validate"));
+});
+
+test("single: M1 — an external top-level blocker with no blocked case pauses directly (external branch, not the blocked wording)", async () => {
+  const dod = { ...R.dodPass, gatesPass: false, smokeAllPass: false, blocker: "credentials", blockerDetail: "LLM key rejected",
+    cases: [{ id: "AC1", name: "happy path", status: "pass" }] };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": dod, "pause-for-human": "posted" });
+  assert.equal(run.error && run.error.name, "EscalationStop");
+  const prompt = run.prompts.find((p) => p.label === "pause-for-human").prompt;
+  assert.match(prompt, /LLM key rejected/);
+  assert.doesNotMatch(prompt, /Smoke blocked by an external condition/, "the external branch fired, not the blocked one");
+  assert.ok(!run.labels.includes("reimplement-after-validate"));
+});
+
+test("federated: M1 — a top-level external blocker does not override case statuses", async () => {
+  const dod = { ...R.dodPass, smokeAllPass: false, blocker: "usage_limit", blockerDetail: "x",
+    cases: [{ id: "AC1", name: "happy path", status: "fail", detail: "500" }, { id: "AC2", name: "live", status: "blocked", blocker: "infra", blockerDetail: "VPN" }] };
+  const scenario = { ...FED_HAPPY, [T + "validate-and-dod"]: (p, o, n) => (n === 0 ? dod : { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC2", name: "live", status: "pass" }] }),
+    [T + "reimplement-after-validate"]: { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.match(run.prompts.find((p) => p.label === T + "reimplement-after-validate").prompt, /code failure 1 of 3/);
+});
+
+test("single: M2 — an accepted no-commit deferral round clears the stale 'previous failure stands' note", async () => {
+  const scenario = { ...HAPPY,
+    "adversarial-reviewer": (p, o, n) => (n === 0 ? REJECT_F1 : { ...R.reviewPass, resolved: [{ id: "F1", status: "addressed" }], deferralVerdicts: [{ id: "D1", accepted: true }] }),
+    "correctness-reviewer": (p, o, n) => (n === 0 ? R.reviewPass : { ...R.reviewPass, deferralVerdicts: [{ id: "D1", accepted: true }] }),
+    "reimplement-after-review": { ...R.implement, minorsDeferred: PUSHBACK },
+    "validate-and-dod": (p, o, n) => (n === 0 ? failAt("boom") : R.dodPass),
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-validate");
+  assert.doesNotMatch(re.prompt, /previous failure stands/);
+});
+
+test("single: M3 — an incremental smoke that omits previously reported cases (no carried rows) still gets a confirmation smoke", async () => {
+  const omits = { ...R.dodPass, cases: [{ id: "AC3", name: "live call", status: "pass" }] };
+  const scenario = { ...HAPPY,
+    "validate-and-dod": (p, o, n) => [FAIL_AC3, omits, FULL_GREEN][n],
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const v = run.prompts.filter((p) => p.label === "validate-and-dod");
+  assert.equal(v.length, 3);
+  assert.match(v[2].prompt, /CONFIRMATION SMOKE/);
+});
+
+test("federated: M3 — an incremental smoke that omits previously reported cases still gets a confirmation smoke", async () => {
+  const omits = { ...R.dodPass, cases: [{ id: "AC3", name: "live call", status: "pass" }] };
+  const scenario = { ...FED_HAPPY, [T + "validate-and-dod"]: (p, o, n) => [FAIL_AC3, omits, FULL_GREEN][n], [T + "reimplement-after-validate"]: { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.equal(run.prompts.filter((p) => p.label === T + "validate-and-dod").length, 3);
+});
+
+// ---------------------------------------------------------------------------
+// Re-review of c894c1a: N1 (chained resume), N2 (red suite from an outage),
+// N3 (sibling features replay on a resumed batch), N4 (preflight wording).
+// ---------------------------------------------------------------------------
+
+const BLOCKED_AT_C = { ...BLOCKED_AT_B, cases: [{ id: "AC1", name: "happy path", status: "pass", files: ["src/a.py"] }, { id: "AC3", name: "live call", status: "blocked", blocker: "infra", blockerDetail: "VPN dropped again", files: ["src/live.py"] }] };
+const CARRY_OK = { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass", carried: true }, { id: "AC3", name: "live call", status: "pass" }] };
+
+
+
+
+
+test("single: N2 — a red suite caused by an outage (blocked case, external top-level blocker, no failed case) pauses (blocked case listed)", async () => {
+  const dod = { ...R.dodPass, gatesPass: false, smokeAllPass: false, blocker: "infra", blockerDetail: "integration: VPN dropped",
+    cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC2", name: "live", status: "blocked", blocker: "infra", blockerDetail: "VPN dropped" }] };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": dod, "pause-for-human": "posted" });
+  assert.equal(run.error && run.error.name, "EscalationStop");
+  assert.ok(!run.labels.includes("reimplement-after-validate"), "no validate slot spent");
+  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /AC2|VPN/);
+});
+
+test("single: N2 — a red suite flagged code with a blocked case is still a code failure", async () => {
+  const dod = { ...R.dodPass, gatesPass: false, smokeAllPass: false, blocker: "code", failureContext: "integration: 3 failed",
+    cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC2", name: "live", status: "blocked", blocker: "infra", blockerDetail: "VPN" }] };
+  const scenario = { ...HAPPY, "validate-and-dod": (p, o, n) => (n === 0 ? dod : R.dodPass), "reimplement-after-validate": { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  assert.match(run.prompts.find((p) => p.label === "reimplement-after-validate").prompt, /code failure 1 of 3/);
+});
+
+test("federated: N2 — a red suite caused by an outage pauses the feature", async () => {
+  const dod = { ...R.dodPass, gatesPass: false, smokeAllPass: false, blocker: "infra", blockerDetail: "integration: VPN dropped",
+    cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC2", name: "live", status: "blocked", blocker: "infra", blockerDetail: "VPN dropped" }] };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, { ...FED_HAPPY, [T + "validate-and-dod"]: dod, "pause-feature-for-human:f1": "posted" });
+  assert.ok(!run.labels.includes(T + "reimplement-after-validate"));
+  assert.match(run.prompts.find((p) => p.label === "pause-feature-for-human:f1").prompt, /VPN/);
+});
+
+test("single: N4 — the preflight step tells the agent to report every case as blocked, never fail", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  assert.match(run.prompts.find((p) => p.label === "validate-and-dod").prompt, /report every case with status 'blocked'[^.]*never 'fail'/i);
+});
+
+
+test("single: validate prompt — blocker='code' when a case OR a suite failed because of the change", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  assert.match(run.prompts.find((p) => p.label === "validate-and-dod").prompt, /'code' when a case or a suite failed because of the change/);
+});
+
+test("both scripts: no pausedSmoke / siblingNonce / validateResumeTag machinery (resume record is tracked in #20)", async () => {
+  for (const f of Object.values(SCRIPTS)) {
+    const src = await readFile(new URL(f, `file://${repoRoot}`), "utf8");
+    assert.doesNotMatch(src, /pausedSmoke|siblingNonce|batchPriorNonce|validateResumeTag|applyPausedSmoke/, f);
+  }
+});
+
+test("both scripts: the validate prompt's resume nonce handling is the base branch's (every validate carries it)", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r1" }, HAPPY);
+  assert.match(run.prompts.find((p) => p.label === "validate-and-dod").prompt, /pass 1, resume r1 \(spec D4/);
+});
+
+test("single: #17 — the blocked pause tells the operator to resume as for any other pause", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": blockedDod(), "pause-for-human": "posted" });
+  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /resume the run as for any other pause/);
 });

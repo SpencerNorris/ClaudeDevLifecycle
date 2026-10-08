@@ -150,6 +150,7 @@ options. Resuming with identical inputs replays cached results — including a
 *failed* validate verdict. Always pass a fresh `resumeNonce` (folded into the
 Validate prompt) and, when a previous attempt left a branch behind,
 `existingBranch` so the implementer continues it instead of starting over.
+A pause for an externally blocked smoke case resumes like any other pause: the validate re-runs under the fresh `resumeNonce`. The cost of a resume (earlier validates re-running at old commits) and a sound resume record for every pause type are tracked in #20.
 Uncommitted work in a dead agent's worktree is not on any branch; recover it
 by committing in that worktree before resuming, then remove the worktree.
 
