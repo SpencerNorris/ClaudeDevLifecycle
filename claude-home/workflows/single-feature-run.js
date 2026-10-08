@@ -42,6 +42,10 @@
  *     6. CI         poll GitHub Actions. Red -> read logs, fix, re-push, re-validate
  *                   as a delta (capped at K). Green -> return the PR URL.
  *
+ *   OPTIONAL MODEL ARG: args.validateModel (string, default "sonnet") picks the
+ *   model for the VALIDATE stage's agent; "opus" puts the smoke + DoD judgement
+ *   on the same tier as the review panel.
+ *
  *   Gate B (the human merging the dev->main PR) happens AFTER this workflow
  *   returns — it is a human touchpoint, not a workflow step.
  *
@@ -873,7 +877,7 @@ async function runValidate(ctx, pass) {
       "ACCEPTED DEFERRALS (list each under ## Follow-ups): " + (ctx.acceptedDeferrals.length ? ctx.acceptedDeferrals.map((d) => d.id + ": " + d.reason).join("; ") : "none") + "\n" +
       "gatesPass is true ONLY if every suite passed; smokeAllPass ONLY if every case in `cases` has pass=true.\n\n" +
       "Feature: " + featureDescription + "\nLinked issue: " + issueRef,
-    { label: "validate-and-dod", phase: "Validate", model: "sonnet", schema: DOD_SCHEMA }
+    { label: "validate-and-dod", phase: "Validate", model: validateModel, schema: DOD_SCHEMA }
   );
 }
 
@@ -934,6 +938,10 @@ const gateCommands = validGateCommands(RUN_ARGS.gateCommands);
 // previous (interrupted) attempt already created instead of starting fresh.
 const resumeNonce = RUN_ARGS.resumeNonce ? String(RUN_ARGS.resumeNonce) : "";
 const existingBranch = RUN_ARGS.existingBranch ? String(RUN_ARGS.existingBranch) : "";
+// Model for the Validate stage: defaults to "sonnet"; pass
+// args.validateModel = "opus" when the validation + DoD judgement should sit on
+// the same tier as the review panel. Accepted as a string.
+const validateModel = RUN_ARGS.validateModel ? String(RUN_ARGS.validateModel) : "sonnet";
 
 if (!featureDescription) {
   throw new Error(

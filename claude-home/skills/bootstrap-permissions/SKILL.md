@@ -406,17 +406,19 @@ Propose it, then on confirmation:
    is a shared policy flag: committing it makes the opt-in travel with the repo so
    anyone who clones inherits the protection.
 
-3. **Set GitHub server-side branch protection if available** — the only
-   *unbypassable* guarantee. If the repo has a GitHub remote and `gh` is
-   authenticated, offer to run:
+3. **Set GitHub server-side branch protection where the plan supports it** — the
+   only *unbypassable* guarantee. If the repo has a GitHub remote and `gh` is
+   authenticated, offer this call for PUBLIC repos (available on GitHub's free
+   plan), and for private repos only where the account's plan supports protected
+   branches:
    ```bash
    gh api --method PUT repos/{owner}/{repo}/branches/main/protection --input - <<'JSON'
    { "required_pull_request_reviews": {"required_approving_review_count": 1},
      "required_status_checks": null, "enforce_admins": true, "restrictions": null }
    JSON
    ```
-   If it fails because the plan doesn't offer protected branches on private repos
-   (common on free/pro), say so plainly: **the local hooks are then the actual
+   If it is unavailable (e.g. a private repo on a plan without protected
+   branches), say so plainly: **the local hooks are then the actual
    main-protection, so the opt-in in step 1 is essential, not optional.** Be honest
    that the hooks stop *accidental* pushes to `main` but are not adversary-proof —
    a deliberate `git push --no-verify` or an unset `core.hooksPath` bypasses them.
