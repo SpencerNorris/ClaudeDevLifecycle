@@ -378,6 +378,48 @@ function renderFindings(list) {
   return list.map((f) => "- " + f.id + " [" + f.severity + "] " + f.category + (f.location ? " @ " + f.location : "") + ": " + f.detail).join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// Failure-context builders (#18). The context handed to the re-implementer is
+// assembled HERE, in code, from everything the failing stage returned — never
+// left to a single free-text field the agent may or may not have filled in.
+// Free-text evidence is capped so a huge log cannot bloat every later prompt;
+// a cut is always announced in the text itself, never silent.
+// ---------------------------------------------------------------------------
+const EVIDENCE_CAP = 8192; // characters per forwarded block (smoke transcript, gates output)
+function capText(text, cap, what) {
+  const t = String(text || "");
+  if (t.length <= cap) return t;
+  return t.slice(0, cap) + "\n[... " + what + " truncated: " + (t.length - cap) + " of " + t.length + " characters omitted ...]";
+}
+/** The `## Smoke test transcript` section of a DoD report, capped; "" when absent. */
+function smokeTranscript(report) {
+  const m = /(?:^|\n)## Smoke test transcript[^\n]*\n/.exec(String(report || ""));
+  if (!m) return "";
+  const rest = String(report).slice(m.index + m[0].length);
+  const next = rest.search(/\n## /); // a level-2 heading ends the section; `### ` sub-headings stay inside it
+  return capText((next === -1 ? rest : rest.slice(0, next)).trim(), EVIDENCE_CAP, "smoke transcript");
+}
+function renderCase(c) {
+  return c.id + " " + c.name + (c.detail ? " — " + c.detail : "") + (c.files && c.files.length ? " (files: " + c.files.join(", ") + ")" : "");
+}
+/** Everything a failed validate returned: every failed case with its detail and
+ * files, the agent's own `failureContext` IN ADDITION to the case list, and the
+ * capped transcript. */
+function smokeEvidence(dod, failed) {
+  const parts = [];
+  if (dod.failureContext) parts.push("Validate agent's account: " + dod.failureContext);
+  if (failed.length) parts.push("FAILED CASES:\n" + failed.map((c) => "- " + renderCase(c)).join("\n"));
+  if (!parts.length) parts.push("integration or regression suites did not pass (integration: " + ((dod.tests || {}).integration || "n/a") + "; regression: " + ((dod.tests || {}).regression || "n/a") + ")");
+  const transcript = smokeTranscript(dod.report);
+  if (transcript) parts.push("SMOKE TRANSCRIPT (from the validate report):\n" + transcript);
+  return parts.join("\n");
+}
+/** The gates agent's per-command summaries plus its (capped) failing output. */
+function gatesEvidence(g) {
+  return "unit: " + g.unit + "; lint: " + g.lint + "; typecheck: " + g.typecheck +
+    (g.failureContext ? "\nFAILING OUTPUT:\n" + capText(g.failureContext, EVIDENCE_CAP, "gates output") : "");
+}
+
 async function runReviewPanel(runLabel, ctx, base, evidence, mode) {
   const delta = mode && mode.prevSha;
   const deferrals = ctx.minorsDeferred.length
@@ -1119,7 +1161,7 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
   if (isExternalBlocker(g.blocker)) { ctx.failureContext = g.blockerDetail || ("blocker=" + g.blocker); await pauseForHuman("Gates", g.blocker, ctx); }
   if (!g.pass) {
     validateFailures++;
-    ctx.failureContext = "Gates failed (code failure " + validateFailures + " of " + K + ", pass " + pass + "): " + (g.failureContext || "unit/lint/typecheck red");
+    ctx.failureContext = "Gates failed (code failure " + validateFailures + " of " + K + ", pass " + pass + "): " + gatesEvidence(g);
     if (validateFailures === K) await escalate("Gates", validateFailures, ctx);
     if (ctx.lastReimplementNote) { ctx.failureContext += "\n" + ctx.lastReimplementNote; ctx.lastReimplementNote = null; }
     await reimplement("reimplement-after-validate", "back to IMPLEMENT after a GATES failure", ctx.failureContext, pass);
@@ -1176,7 +1218,7 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
     validateFailures++;
     ctx.failedCases = (dod.cases || []).filter((c) => !c.pass);
     ctx.lastSmokeSha = ctx.headSha;
-    ctx.failureContext = "Smoke failed (code failure " + validateFailures + " of " + K + ", pass " + pass + "): " + (dod.failureContext || ctx.failedCases.map((c) => c.id + " " + c.name).join(", ") || "integration or regression suites did not pass");
+    ctx.failureContext = "Smoke failed (code failure " + validateFailures + " of " + K + ", pass " + pass + "):\n" + smokeEvidence(dod, ctx.failedCases);
     if (validateFailures === K) await escalate("Validate", validateFailures, ctx);
     if (ctx.lastReimplementNote) { ctx.failureContext += "\n" + ctx.lastReimplementNote; ctx.lastReimplementNote = null; }
     await reimplement("reimplement-after-validate", "back to IMPLEMENT after a SMOKE failure", ctx.failureContext, pass);

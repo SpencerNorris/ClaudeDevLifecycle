@@ -954,3 +954,80 @@ test("federated: #14 — a no-commit reimplement that returns deferrals dispatch
   assert.equal(run.labels.filter((l) => l === T + "reimplement-after-review").length, 1);
   assert.equal(run.result.shipped, true);
 });
+
+// ---------------------------------------------------------------------------
+// #18 — forward failed cases' detail/files, dod.failureContext AND the case
+// list, and the capped smoke transcript to the re-implementer (and gates output
+// on the gates failure path).
+// ---------------------------------------------------------------------------
+
+const TRANSCRIPT = "$ curl -s localhost:8080/graph\nHTTP 502 from fuseki\nTRACE-MARKER-123";
+const failingDod = (extra = {}) => ({
+  ...R.dodPass, smokeAllPass: false, failureContext: "AC3 failed: fuseki unreachable",
+  report: "## Changes\n- x\n\n## Tests\n- ok\n\n## Smoke test transcript\n" + TRANSCRIPT + "\n\n## Docs updated\n- none\n",
+  cases: [{ id: "AC1", name: "happy path", pass: true }, { id: "AC3", name: "fuseki down", pass: false, detail: "502 from /graph on cold start", files: ["src/api/graph.py"] }],
+  ...extra,
+});
+const smokeThenGreen = (first) => (p, o, n) => (n === 0 ? first : { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", pass: true }, { id: "AC3", name: "fuseki down", pass: true }] });
+
+test("single: #18 — a failed smoke's reimplement prompt carries each failed case's detail and files, dod.failureContext, and the transcript", async () => {
+  const scenario = { ...HAPPY, "validate-and-dod": smokeThenGreen(failingDod()), "reimplement-after-validate": { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-validate");
+  assert.match(re.prompt, /AC3 fuseki down/);
+  assert.match(re.prompt, /502 from \/graph on cold start/, "case detail forwarded");
+  assert.match(re.prompt, /src\/api\/graph\.py/, "case files forwarded");
+  assert.match(re.prompt, /AC3 failed: fuseki unreachable/, "dod.failureContext forwarded in addition to the list");
+  assert.match(re.prompt, /TRACE-MARKER-123/, "transcript section forwarded");
+  assert.doesNotMatch(re.prompt, /## Docs updated/, "only the transcript section, not the rest of the report");
+  assert.doesNotMatch(re.prompt, /## Changes/);
+});
+
+test("single: #18 — a long transcript is truncated at 8 KB with a visible marker", async () => {
+  const big = "x".repeat(20000);
+  const dod = failingDod({ report: "## Smoke test transcript\n" + big + "\nTAIL-MARKER\n## Docs updated\n- none" });
+  const scenario = { ...HAPPY, "validate-and-dod": smokeThenGreen(dod), "reimplement-after-validate": { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-validate");
+  assert.match(re.prompt, /transcript truncated/i);
+  assert.doesNotMatch(re.prompt, /TAIL-MARKER/);
+  assert.ok(re.prompt.length < 8192 + 6000, "bounded: " + re.prompt.length);
+  assert.ok((re.prompt.match(/x/g) || []).length >= 8000, "the head of the transcript is kept");
+});
+
+test("single: #18 — with no dod.failureContext the case list still reaches the implementer; with no transcript section nothing is invented", async () => {
+  const dod = failingDod({ failureContext: undefined, report: "## Changes\n- x" });
+  delete dod.failureContext;
+  const scenario = { ...HAPPY, "validate-and-dod": smokeThenGreen(dod), "reimplement-after-validate": { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-validate");
+  assert.match(re.prompt, /AC3 fuseki down — 502 from \/graph/);
+  assert.doesNotMatch(re.prompt, /SMOKE TRANSCRIPT/);
+});
+
+test("single: #18 — a gates failure forwards the unit/lint/typecheck summaries and the failing output", async () => {
+  const scenario = { ...HAPPY,
+    "gates": (p, o, n) => (n === 0 ? { ...R.gatesPass, pass: false, unit: "2 failed: test_a, test_b", lint: "clean", typecheck: "3 errors", failureContext: "FAIL test_a: assert 1 == 2" } : R.gatesPass),
+    "reimplement-after-validate": { ...R.implement, headSha: SHA_B },
+  };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === "reimplement-after-validate");
+  assert.match(re.prompt, /unit: 2 failed: test_a, test_b/);
+  assert.match(re.prompt, /typecheck: 3 errors/);
+  assert.match(re.prompt, /FAIL test_a: assert 1 == 2/);
+});
+
+test("federated: #18 — a failed smoke's reimplement prompt carries case detail, files, failureContext and the transcript", async () => {
+  const scenario = { ...FED_HAPPY, [T + "validate-and-dod"]: smokeThenGreen(failingDod()), [T + "reimplement-after-validate"]: { ...R.implement, headSha: SHA_B } };
+  const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, scenario);
+  assert.equal(run.error, null, run.error && run.error.stack);
+  const re = run.prompts.find((p) => p.label === T + "reimplement-after-validate");
+  assert.match(re.prompt, /502 from \/graph on cold start/);
+  assert.match(re.prompt, /src\/api\/graph\.py/);
+  assert.match(re.prompt, /AC3 failed: fuseki unreachable/);
+  assert.match(re.prompt, /TRACE-MARKER-123/);
+});
