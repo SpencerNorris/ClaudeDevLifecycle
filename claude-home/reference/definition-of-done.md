@@ -155,7 +155,10 @@ never `fail`: it renders as PENDING with its reason, a smoke whose only
 non-passing cases are blocked pauses the run without spending the retry budget,
 and a smoke that also has real failures counts the failure and lists the blocked
 cases separately as not run. The pause comment carries the `pausedSmoke` value
-that makes the resumed validate re-run only the blocked cases.
+(commit, pass, whether it was the confirmation smoke) that makes the resumed
+validate re-run only the blocked cases; if the pause was during the
+confirmation smoke, the resume re-runs that confirmation in full. A resume that
+cannot land on the paused validate pauses again as diverged.
 
 **Preflight comes first.** Before a single test runs, verify every external
 resource the acceptance criteria depend on with the cheapest possible check:
