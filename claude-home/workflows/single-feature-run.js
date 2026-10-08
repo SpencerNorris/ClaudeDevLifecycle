@@ -1289,7 +1289,7 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
     dod = await runValidate(ctx, pass, confirming);
     if (!dod) { ctx.failureContext = "VALIDATE agent died without returning a DoD result."; await pauseForHuman("Validate", "usage_limit", ctx); }
     const outcome = smokeOutcome(dod);
-    // A failed case always counts; otherwise blocked cases pause with a resume value; an external
+    // A failed case always counts; otherwise blocked cases pause (resume as for any other pause, #20); an external
     // top-level blocker with nothing to resume (a preflight stop, or ambiguity) pauses directly (M1/N2).
     if (outcome.kind === "external") { ctx.failureContext = dod.blockerDetail || dod.failureContext || ("blocker=" + dod.blocker); await pauseForHuman("Validate", dod.blocker, ctx); }
     ctx.lastCases = dod.cases || [];
@@ -1297,7 +1297,7 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
     ctx.failedCases = outcome.failed;
     ctx.blockedCases = outcome.blocked;
     if (outcome.kind === "blocked") {
-      // #17: nothing for an implementer to fix — pause; the resume re-runs the blocked cases.
+      // #17: nothing for an implementer to fix — pause; resume as for any other pause (#20).
       ctx.failureContext = blockedPauseContext(outcome.blocked, ctx.headSha, pass, confirming);
       await pauseForHuman("Validate", caseBlockerKind(outcome.blocked[0]), ctx);
     }

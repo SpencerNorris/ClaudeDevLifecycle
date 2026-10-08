@@ -43,10 +43,10 @@ function checkSchema(schema, value, label) {
  * (prompt, opts, nthCallOfThisLabel) => result, or { cacheable: true, result }.
  * A repeated (label, prompt) throws unless the entry is cacheable: that is how
  * the tests catch a prompt that the real harness would serve from its cache. */
-export async function runWorkflowRecording(scriptPath, args, scenario, options = {}) {
+export async function runWorkflowRecording(scriptPath, args, scenario) {
   const source = await readFile(new URL(scriptPath, `file://${repoRoot}`), "utf8");
   const body = source.replace(/^export const meta/m, "const meta");
-  const labels = [], prompts = [], seen = new Set(), counts = {}, cachedHits = [];
+  const labels = [], prompts = [], seen = new Set(), counts = {};
   const pick = (label) => {
     // M14: `in` walks the prototype chain — a label matching an
     // Object.prototype property name (e.g. "constructor", "toString") would
@@ -60,11 +60,6 @@ export async function runWorkflowRecording(scriptPath, args, scenario, options =
   const stubs = {
     agent: async (prompt, opts) => {
       const label = (opts && opts.label) || "(unlabelled)";
-      // Resume modelling: options.cache is a Map of key -> result from an earlier run
-      // (options.store records this run's results). A hit replays the stored result
-      // without dispatching, exactly as the real harness does.
-      const ckey = label + "\n" + prompt;
-      if (options.cache && options.cache.has(ckey)) { cachedHits.push(label); return options.cache.get(ckey); }
       let entry = pick(label);
       const cacheable = !!(entry && entry.cacheable);
       if (cacheable) entry = entry.result;
@@ -79,7 +74,6 @@ export async function runWorkflowRecording(scriptPath, args, scenario, options =
       // caller's own null-handling path (requireAgentResult) is what's under
       // test then, not the schema.
       if (r !== null) checkSchema(opts && opts.schema, r, label);
-      if (options.store) options.store.set(ckey, r);
       return r;
     },
     parallel: async (thunks) => {
@@ -96,9 +90,9 @@ export async function runWorkflowRecording(scriptPath, args, scenario, options =
   const fn = new AsyncFunction("args", ...Object.keys(stubs), body);
   try {
     const result = await fn(args, ...Object.values(stubs));
-    return { labels, prompts, result, error: null, cachedHits };
+    return { labels, prompts, result, error: null };
   } catch (error) {
-    return { labels, prompts, result: null, error, cachedHits };
+    return { labels, prompts, result: null, error };
   }
 }
 
@@ -1290,12 +1284,25 @@ test("single: M1 — a blocked-only smoke with a mislabelled top-level external 
   assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /AC2|VPN/);
 });
 
-test("single: M1 — a preflight stop (external blocker, no pass/fail case) still pauses through the generic path", async () => {
+test("single: M1 — a preflight stop with every case blocked is caught by the blocked branch (blocked-case pause wording)", async () => {
   const dod = { ...R.dodPass, gatesPass: false, smokeAllPass: false, blocker: "infra", blockerDetail: "docker daemon down",
     cases: [{ id: "AC1", name: "happy path", status: "blocked", blocker: "infra", blockerDetail: "docker daemon down" }] };
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": dod, "pause-for-human": "posted" });
   assert.equal(run.error && run.error.name, "EscalationStop");
-  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /docker daemon down/);
+  const prompt = run.prompts.find((p) => p.label === "pause-for-human").prompt;
+  assert.match(prompt, /Smoke blocked by an external condition/, "blockedPauseContext wording: the blocked branch fired");
+  assert.match(prompt, /docker daemon down/);
+  assert.ok(!run.labels.includes("reimplement-after-validate"));
+});
+
+test("single: M1 — an external top-level blocker with no blocked case pauses directly (external branch, not the blocked wording)", async () => {
+  const dod = { ...R.dodPass, gatesPass: false, smokeAllPass: false, blocker: "credentials", blockerDetail: "LLM key rejected",
+    cases: [{ id: "AC1", name: "happy path", status: "pass" }] };
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": dod, "pause-for-human": "posted" });
+  assert.equal(run.error && run.error.name, "EscalationStop");
+  const prompt = run.prompts.find((p) => p.label === "pause-for-human").prompt;
+  assert.match(prompt, /LLM key rejected/);
+  assert.doesNotMatch(prompt, /Smoke blocked by an external condition/, "the external branch fired, not the blocked one");
   assert.ok(!run.labels.includes("reimplement-after-validate"));
 });
 

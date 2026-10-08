@@ -1386,7 +1386,7 @@ async function processFeature(feature, ctx, devBranchName) {
         dod = await runValidate(ctx, pass, confirming);
         if (!dod) await ctx.fail("Validate", "usage_limit", "VALIDATE agent died without returning a DoD result.");
         const outcome = smokeOutcome(dod);
-        // A failed case always counts; otherwise blocked cases pause with a resume value; an external
+        // A failed case always counts; otherwise blocked cases pause (resume as for any other pause, #20); an external
         // top-level blocker with nothing to resume (a preflight stop, or ambiguity) pauses directly (M1/N2).
         if (outcome.kind === "external") await ctx.fail("Validate", dod.blocker, dod.blockerDetail || dod.failureContext || ("blocker=" + dod.blocker));
         ctx.lastCases = dod.cases || [];
