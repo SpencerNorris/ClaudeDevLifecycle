@@ -446,7 +446,7 @@ function caseBlockerKind(c) {
 }
 /** What a whole validate result means: "fail" (a failed case, a red suite the agent blames
  * on the code, or a smoke that did not pass without any case explaining why), "blocked"
- * (blocked cases and nothing failed: pause, print pausedSmoke), "external" (an external
+ * (blocked cases and nothing failed: pause), "external" (an external
  * top-level blocker with no blocked case to resume: a preflight stop, or ambiguity)
  * or "pass". A failed case always wins; blocked cases are then listed alongside. */
 function smokeOutcome(dod) {
@@ -467,83 +467,12 @@ function renderLastCases(cases) {
   if (!cases.length) return "(none recorded)";
   return cases.map((c) => "- " + c.id + " " + c.name + ": " + c.status + (c.files && c.files.length ? " (files: " + c.files.join(", ") + ")" : "")).join("\n");
 }
-/** The pause text for a blocked smoke: the blocked cases, and the exact `pausedSmoke`
- * value that makes the resumed validate re-run only them. `pausedSmoke` is a CHAIN of
- * points, one per pause across successive resumes: the points this run inherited plus
- * the new one, so a run resumed from this value can rebuild every earlier prompt.
- * Each point is the validate it paused on (commit, pass, confirm), the nonce that
- * validate's prompt carried, and the case results to seed the resumed validate with. */
-function blockedPauseContext(blocked, cases, sha, pass, confirm, resumeWhere, inherited, nonce) {
-  const point = { sha, pass, confirm, nonce, cases: cases.map((c) => ({ id: c.id, name: c.name, status: c.status, ...(c.files && c.files.length ? { files: c.files } : {}) })) };
-  const paused = { points: [...inherited, point] };
+/** The pause text for a blocked-only smoke: the blocked cases and their blocker detail.
+ * There is deliberately no resume record: a sound one for every pause type is tracked in #20. */
+function blockedPauseContext(blocked, sha, pass, confirm) {
   return "Smoke blocked by an external condition at " + sha + " (pass " + pass + (confirm ? ", confirmation smoke" : "") + "): " + blocked.length + " case(s) could not run. This is NOT a code failure and no validate slot was spent.\n" +
     renderBlockedCases(blocked) +
-    "\nAfter fixing the condition, resume with a fresh resumeNonce and pass " + resumeWhere + " = " + JSON.stringify(paused) + " so the validate re-runs only the blocked cases.";
-}
-/** Validate an operator-supplied `pausedSmoke` chain ({ points: [...] }, or the older single-point
- * shape, which is normalised to a one-point chain); null when absent, an error naming `where` when malformed. */
-function validPausedSmoke(raw, where) {
-  if (raw === undefined || raw === null) return null;
-  const shape = "must be { points: [{ sha: <40 hex>, pass: <int>, confirm: <bool>, nonce: <string>, cases: [{ id, name, status, files? }] }, …] }, ascending by (pass, confirm), each with at least one blocked case — paste the value from the pause comment.";
-  const pts = raw && typeof raw === "object" ? (Array.isArray(raw.points) ? raw.points : [raw]) : [];
-  const okPoint = (q) => q && typeof q === "object" && /^[0-9a-f]{40}$/.test(q.sha || "") && Number.isInteger(q.pass) && q.pass >= 1 && typeof q.confirm === "boolean" &&
-    (q.nonce === undefined || typeof q.nonce === "string") && Array.isArray(q.cases) && q.cases.length > 0 &&
-    q.cases.every((c) => c && typeof c.id === "string" && c.id && typeof c.name === "string" && c.name && CASE_STATUSES.includes(c.status)) &&
-    q.cases.some((c) => c.status === "blocked");
-  const key = (q) => q.pass * 2 + (q.confirm ? 1 : 0);
-  if (!pts.length || !pts.every(okPoint) || !pts.every((q, i) => i === 0 || key(q) > key(pts[i - 1]))) throw new Error(where + " " + shape);
-  return { points: pts.map((q) => ({ sha: q.sha, pass: q.pass, confirm: q.confirm, nonce: q.nonce || "", cases: q.cases.map((c) => ({ id: c.id, name: c.name, status: c.status, files: Array.isArray(c.files) ? c.files : [] })) })) };
-}
-/** The next chain point the replay has not yet landed on (null when none, or no chain). */
-function nextPausedPoint(ctx) {
-  const c = ctx.pausedSmoke;
-  return c && ctx.pausedApplied < c.points.length ? c.points[ctx.pausedApplied] : null;
-}
-function reachedPoint(q, pass, confirm) {
-  return pass > q.pass || (pass === q.pass && (confirm || !q.confirm));
-}
-/** The nonce a validate prompt carries. A chain makes the replay's prompts rebuildable:
- * validates before point 0 carry point 0's nonce (the run that first paused), validates
- * between point i-1 and point i carry point i's nonce (the run that paused again), and
- * validates from the last point on carry this run's fresh resumeNonce. Without a chain,
- * a sibling feature of a resumed batch replays with the batch's original nonce
- * (ctx.siblingNonce), otherwise every validate carries the fresh nonce. */
-function validateNonceFor(ctx, pass, confirm) {
-  const c = ctx.pausedSmoke;
-  if (c) {
-    const q = c.points.find((pt) => !reachedPoint(pt, pass, confirm));
-    return q ? q.nonce : resumeNonce;
-  }
-  return ctx.siblingNonce !== null && ctx.siblingNonce !== undefined ? ctx.siblingNonce : resumeNonce;
-}
-function validateResumeTag(ctx, pass, confirm) {
-  const n = validateNonceFor(ctx, pass, confirm);
-  return n ? ", resume " + n : "";
-}
-/** A resume that does not land exactly on the next paused validate is a divergence: the
- * seed must never be dropped silently. Returns the pause message, or null. */
-function pausedSmokeDivergence(ctx, pass, confirm) {
-  const q = nextPausedPoint(ctx);
-  if (!q) return null;
-  if (q.sha === ctx.headSha && q.pass === pass && q.confirm === confirm) return null; // applied by runValidate
-  if (!reachedPoint(q, pass, confirm)) return null; // still replaying earlier stages
-  return "Resume diverged: pausedSmoke point " + (ctx.pausedApplied + 1) + " names pass " + q.pass + (q.confirm ? " (confirmation smoke)" : "") + " at " + q.sha + ", but the replay reached the validate at pass " + pass + (confirm ? " (confirmation smoke)" : "") + " on " + ctx.headSha + ". The earlier stages did not replay identically (inputs changed, or the cache missed). Nothing was run; re-run from the original run or drop pausedSmoke.";
-}
-/** After the loop: a chain point never landed on means the replay never reached its validate. */
-function pausedSmokeUnreached(ctx) {
-  const q = nextPausedPoint(ctx);
-  if (!q) return null;
-  return "Resume diverged: the run finished its validate/review loop without ever reaching paused validate " + (ctx.pausedApplied + 1) + " (pass " + q.pass + (q.confirm ? ", confirmation smoke" : "") + " at " + q.sha + "). Nothing was shipped; re-run from the original run or drop pausedSmoke.";
-}
-/** On a resume at the exact validate the next chain point paused on, seed the incremental state from its case list. */
-function applyPausedSmoke(ctx, pass, confirm) {
-  const q = nextPausedPoint(ctx);
-  if (!q || q.sha !== ctx.headSha || q.pass !== pass || q.confirm !== confirm) return;
-  ctx.pausedApplied++;
-  ctx.lastCases = q.cases;
-  ctx.failedCases = [];
-  ctx.blockedCases = q.cases.filter((c) => c.status === "blocked");
-  ctx.lastSmokeSha = q.sha;
+    "\nFix the condition, then resume the run as for any other pause.";
 }
 
 async function runReviewPanel(runLabel, ctx, base, evidence, mode) {
@@ -1032,7 +961,6 @@ async function reimplement(label, why, context, pass) {
 /** The validate stage in the run worktree: full on the first smoke of a
  * lineage; incremental after a smoke failure (spec D4). */
 async function runValidate(ctx, pass, confirm = false) {
-  applyPausedSmoke(ctx, pass, confirm);
   if (!ctx.stackBaseSha) ctx.stackBaseSha = ctx.headSha; // the stack is first built for this commit
   const named = (cs) => cs.map((c) => c.id + " (" + c.name + (c.files && c.files.length ? "; files " + c.files.join(", ") : "") + ")").join("; ");
   const incremental = !confirm && (ctx.failedCases.length > 0 || ctx.blockedCases.length > 0) && ctx.lastSmokeSha;
@@ -1049,14 +977,14 @@ async function runValidate(ctx, pass, confirm = false) {
       "Keep the stack up between attempts; rebuild images only if a dependency, Dockerfile or nginx template changed.\n"
     : "FULL SMOKE: ";
   return agent(
-    "AUTONOMOUS single-feature run, VALIDATE phase — pass " + pass + validateResumeTag(ctx, pass, confirm) + " (spec D4; reference/definition-of-done.md). " +
+    "AUTONOMOUS single-feature run, VALIDATE phase — pass " + pass + (resumeNonce ? ", resume " + resumeNonce : "") + " (spec D4; reference/definition-of-done.md). " +
       "Work in the run worktree `" + ctx.runWorktree + "` at commit " + ctx.headSha + " (verify with `git rev-parse HEAD`). Never checkout, rebuild or write to the main working tree.\n" +
       "STEP 0 — PREFLIGHT, before running a single test: an LLM key via ONE minimal call; the Docker daemon (`docker info` within 15 s) and service health; at least 10 GB free on Docker's volume; GitHub reachability if the smoke needs it. On any failure STOP and return gatesPass=false, smokeAllPass=false, blocker = 'infra' | 'credentials' | 'billing' | 'usage_limit', blockerDetail = the exact error, and report every case with status 'blocked' (never 'fail') carrying that same blocker and detail. Never retry a preflight, never attempt host recovery, never read credentials.\n" +
       "STEP 1 — integration + regression suites at this commit. Unit, lint and type-check already passed (" + ctx.gateSummary + "); copy those into `tests`.\n" +
       "STEP 2 — " + scope + "the happy path, EVERY named edge case in the issue/spec (or derive and list them), and the plausible failure modes for the surface touched, against the running system. " +
       "REPORT EVERY SMOKE CASE in `cases` with a stable id (AC1, AC2, … in the issue's order, then E1… for derived edges and F1… for failure modes), `status`, a one-line `detail`, and the source files the case exercises in `files`. " +
       "`status` is 'pass'; 'fail' ONLY when the change broke the case; or 'blocked' when the case could not run because an external resource went away mid-smoke (network/VPN drop, a rate limit or call budget hit, a daemon that died after preflight) — then set the case's `blocker` (infra | credentials | billing | usage_limit) and `blockerDetail`. Never report an un-run case as 'fail'.\n" +
-      "Top-level blocker: 'ambiguity' when acceptance criteria cannot be derived, a preflight kind when STEP 0 failed, otherwise 'code' when a case failed or 'none'. Blocked cases are decided from their own `status`, not from this field.\n" +
+      "Top-level blocker: 'ambiguity' when acceptance criteria cannot be derived, a preflight kind when STEP 0 failed, 'code' when a case or a suite failed because of the change, otherwise 'none'. Blocked cases are decided from their own `status`, not from this field.\n" +
       "Produce the DoD report with the exact structure from reference/definition-of-done.md (## Changes / ## Tests / ## Smoke test transcript / ## Docs updated / ## Follow-ups). Under ## Smoke test transcript render the re-run cases as a table" + (confirm ? " (this is a confirmation smoke: every case is re-run, so there is no carried list)" : " and, if any, a separate list 'Carried forward (not re-run this pass)'") + "; render every blocked case as PENDING with its reason. Under ## Follow-ups list every accepted deferral from the review panel.\n" +
       "ACCEPTED DEFERRALS (list each under ## Follow-ups): " + (ctx.acceptedDeferrals.length ? ctx.acceptedDeferrals.map((d) => d.id + ": " + d.reason).join("; ") : "none") + "\n" +
       "gatesPass is true ONLY if every suite passed; smokeAllPass ONLY if every case in `cases` has status 'pass'.\n\n" +
@@ -1175,9 +1103,6 @@ const ctx = {
   stackBaseSha: null,      // the commit the smoke stack was first built for (#15)
   lastCases: [],           // every case's last result, handed to the next incremental smoke
   incrementalBase: null,
-  pausedSmoke: validPausedSmoke(RUN_ARGS.pausedSmoke, "args.pausedSmoke"), // operator-supplied resume state (#17)
-  pausedApplied: 0,           // how many chain points the replay has landed on
-  siblingNonce: null,
   lastSmokeSha: null,
   prevReviewSha: null,
   lastCritique: null,       // the standing critique when prevReviewSha === headSha (no new commit landed)
@@ -1361,8 +1286,6 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
   // rests on (#15). It is judged exactly like any other validate: a failure there
   // spends a validate slot and returns to implement.
   for (let confirming = false; ; confirming = true) {
-    const diverged = pausedSmokeDivergence(ctx, pass, confirming);
-    if (diverged) { ctx.failureContext = diverged; await pauseForHuman("Validate", "infra", ctx); }
     dod = await runValidate(ctx, pass, confirming);
     if (!dod) { ctx.failureContext = "VALIDATE agent died without returning a DoD result."; await pauseForHuman("Validate", "usage_limit", ctx); }
     const outcome = smokeOutcome(dod);
@@ -1375,7 +1298,7 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
     ctx.blockedCases = outcome.blocked;
     if (outcome.kind === "blocked") {
       // #17: nothing for an implementer to fix — pause; the resume re-runs the blocked cases.
-      ctx.failureContext = blockedPauseContext(outcome.blocked, ctx.lastCases, ctx.headSha, pass, confirming, "args.pausedSmoke", ctx.pausedSmoke ? ctx.pausedSmoke.points.slice(0, ctx.pausedApplied) : [], validateNonceFor(ctx, pass, confirming));
+      ctx.failureContext = blockedPauseContext(outcome.blocked, ctx.headSha, pass, confirming);
       await pauseForHuman("Validate", caseBlockerKind(outcome.blocked[0]), ctx);
     }
     if (outcome.kind === "fail") {
@@ -1404,10 +1327,6 @@ for (let pass = 1; pass <= 2 * K && !reviewed; pass++) {
   log("Gates, review and smoke green at " + ctx.headSha + ".");
 }
 
-{
-  const unreached = pausedSmokeUnreached(ctx);
-  if (unreached) { ctx.failureContext = unreached; await pauseForHuman("Validate", "infra", ctx); }
-}
 
 // If the loop exited without a review pass and without escalating, that is a bug
 // in the cap logic — fail loud rather than ship unreviewed work.

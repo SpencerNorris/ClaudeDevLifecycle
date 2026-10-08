@@ -1067,7 +1067,8 @@ test("single: #17 — a blocked-only smoke pauses for a human without spending a
   assert.match(pause.prompt, /usage_limit blocker/, "the case's own blocker kind is used");
   assert.match(pause.prompt, /AC2/);
   assert.match(pause.prompt, /external call budget exhausted/);
-  assert.match(pause.prompt, /pausedSmoke/, "resume instructions carry the paused case list");
+  assert.doesNotMatch(pause.prompt, /pausedSmoke/, "no resume record is printed (tracked in #20)");
+  assert.match(pause.prompt, /resume the run as for any other pause/);
   assert.match(pause.prompt, new RegExp(SHA_A));
   assert.ok(run.labels.indexOf("cleanup-worktrees") < run.labels.indexOf("pause-for-human"));
 });
@@ -1098,29 +1099,7 @@ test("single: #17 — a mixed fail+blocked smoke counts one failure and lists th
   assert.match(v[1].prompt, /BLOCKED[\s\S]*AC2/);
 });
 
-test("single: #17 — a resume with pausedSmoke re-runs only the blocked cases, incrementally", async () => {
-  const paused = { sha: SHA_A, pass: 1, confirm: false, cases: [{ id: "AC1", name: "happy path", status: "pass", files: ["src/a.py"] }, { id: "AC2", name: "live call", status: "blocked", files: ["src/live.py"] }] };
-  const scenario = { ...HAPPY,
-    "validate-and-dod": (p, o, n) => (n === 0
-      ? { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass", carried: true }, { id: "AC2", name: "live call", status: "pass" }] }
-      : R.dodPass),
-  };
-  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r1", pausedSmoke: paused }, scenario);
-  assert.equal(run.error, null, run.error && run.error.stack);
-  const v = run.prompts.find((p) => p.label === "validate-and-dod");
-  assert.match(v.prompt, /resume r1/, "a fresh nonce so the paused result is not replayed");
-  assert.match(v.prompt, /INCREMENTAL SMOKE/);
-  assert.match(v.prompt, /BLOCKED[\s\S]*AC2/);
-  assert.match(v.prompt, /AC1 happy path: pass/, "the paused pass's other results are handed over to carry");
-});
 
-test("single: #17/B1 — a pausedSmoke for a different commit is never silently dropped: the run pauses, loudly, as diverged", async () => {
-  const paused = { sha: SHA_C, pass: 1, confirm: false, cases: [{ id: "AC2", name: "live call", status: "blocked" }] };
-  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r1", pausedSmoke: paused }, { ...HAPPY, "pause-for-human": "posted" });
-  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
-  assert.ok(!run.labels.includes("validate-and-dod"), "no smoke runs on a diverged resume");
-  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /resume diverged/i);
-});
 
 test("single: #17 — a blocked case with no recognised blocker kind pauses as infra", async () => {
   const dod = blockedDod({ cases: [{ id: "AC2", name: "live call", status: "blocked" }] });
@@ -1146,19 +1125,10 @@ test("federated: #17 — a blocked-only smoke pauses that feature without a reim
   assert.ok(run.labels.includes("pause-feature-for-human:f1"));
   const pause = run.prompts.find((p) => p.label === "pause-feature-for-human:f1");
   assert.match(pause.prompt, /AC2/);
-  assert.match(pause.prompt, /pausedSmoke/);
+  assert.doesNotMatch(pause.prompt, /pausedSmoke/);
   assert.equal(run.result.shipped, false);
 });
 
-test("federated: #17 — a feature's pausedSmoke makes its validate an incremental over the blocked cases", async () => {
-  const feature = { ...FED_ARGS.features[0], pausedSmoke: { sha: SHA_A, pass: 1, confirm: false, cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC2", name: "live call", status: "blocked" }] } };
-  const scenario = { ...FED_HAPPY, [T + "validate-and-dod"]: (p, o, n) => (n === 0 ? { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass", carried: true }, { id: "AC2", name: "live call", status: "pass" }] } : R.dodPass) };
-  const run = await runWorkflowRecording(SCRIPTS.federated, { ...FED_ARGS, resumeNonce: "r1", features: [feature] }, scenario);
-  assert.equal(run.error, null, run.error && run.error.stack);
-  const v = run.prompts.find((p) => p.label === T + "validate-and-dod");
-  assert.match(v.prompt, /INCREMENTAL SMOKE/);
-  assert.match(v.prompt, /BLOCKED[\s\S]*AC2/);
-});
 
 // ---------------------------------------------------------------------------
 // #15 — one full confirmation smoke at the ship commit whenever the last
@@ -1268,16 +1238,6 @@ test("single: #15 — a confirmation smoke that reports carried rows is rejected
   assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /carried/);
 });
 
-test("single: #15 — the resumed incremental over blocked cases carries the rest, so a confirmation smoke follows", async () => {
-  const paused = { sha: SHA_A, pass: 1, confirm: false, cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC3", name: "fuseki down", status: "blocked" }] };
-  const scenario = { ...HAPPY, "validate-and-dod": (p, o, n) => [CARRIED_GREEN, FULL_GREEN][n] };
-  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r1", pausedSmoke: paused }, scenario);
-  assert.equal(run.error, null, run.error && run.error.stack);
-  const v = run.prompts.filter((p) => p.label === "validate-and-dod");
-  assert.equal(v.length, 2);
-  assert.match(v[1].prompt, /CONFIRMATION SMOKE/);
-  assert.match(v[1].prompt, /resume r1/);
-});
 
 test("federated: #15 — a passing incremental smoke is followed by a full confirmation smoke", async () => {
   const scenario = { ...FED_HAPPY,
@@ -1305,109 +1265,13 @@ const BLOCKED_AT_B = { ...R.dodPass, smokeAllPass: false, blocker: "code",
 const failAt = (detail) => ({ ...R.dodPass, smokeAllPass: false, failureContext: detail,
   cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC3", name: "live call", status: "fail", detail }] });
 
-function pausedFrom(run, label) {
-  const p = run.prompts.find((x) => x.label === label).prompt;
-  const m = /pausedSmoke`? = (\{.*\}) so the validate/.exec(p);
-  assert.ok(m, "pause comment carries the pausedSmoke JSON: " + p.slice(-400));
-  return JSON.parse(m[1]);
-}
 
-test("single: B1 — a pause at pass 2 (after a failed pass-1 smoke and a reimplement) resumes from the cache at exactly that point", async () => {
-  const store = new Map();
-  const base = { ...HAPPY, "pause-for-human": "posted", "reimplement-after-validate": { ...R.implement, headSha: SHA_B } };
-  const orig = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r0" }, { ...base, "validate-and-dod": (p, o, n) => [failAt("502 at 10:01"), BLOCKED_AT_B][n] }, { store });
-  assert.equal(orig.error && orig.error.name, "EscalationStop", orig.error && orig.error.stack);
-  const paused = pausedFrom(orig, "pause-for-human");
-  assert.equal(paused.points.length, 1);
-  assert.equal(paused.points[0].pass, 2);
-  assert.equal(paused.points[0].sha, SHA_B);
-  assert.equal(paused.points[0].confirm, false);
-  // Resume: fresh nonce, same inputs. Earlier stages must replay from the cache; the stubs would
-  // answer differently (different prose, a different commit), so any miss is visible.
-  const resumed = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r1", pausedSmoke: paused },
-    { ...base, "validate-and-dod": (p, o, n) => [{ ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass", carried: true }, { id: "AC3", name: "live call", status: "pass" }] }, FULL_GREEN][n],
-      "reimplement-after-validate": { ...R.implement, headSha: SHA_C } }, { cache: store });
-  assert.equal(resumed.error, null, resumed.error && resumed.error.stack);
-  assert.ok(resumed.cachedHits.includes("validate-and-dod"), "the pass-1 validate replays from the cache");
-  assert.ok(resumed.cachedHits.includes("reimplement-after-validate"), "the reimplement replays from the cache");
-  const v = resumed.prompts.filter((p) => p.label === "validate-and-dod");
-  assert.equal(v.length, 2, "only the paused point and the confirmation run for real");
-  assert.match(v[0].prompt, /pass 2/);
-  assert.match(v[0].prompt, /resume r1/);
-  assert.match(v[0].prompt, /INCREMENTAL SMOKE/);
-  assert.match(v[0].prompt, /BLOCKED[\s\S]*AC3/);
-  assert.doesNotMatch(v[0].prompt, /FAILED, re-run/, "the pass-1 failure was fixed; only the blocked case is re-run");
-  assert.match(v[1].prompt, /CONFIRMATION SMOKE/);
-  assert.equal(resumed.result.prUrl, R.ship.prUrl);
-});
 
-test("single: B1 — a no-commit reimplement leaves two validates at one sha; the resume seeds the right one (by pass)", async () => {
-  const store = new Map();
-  const base = { ...HAPPY, "pause-for-human": "posted" };
-  const noCommit = (p, o, n) => (n === 0 ? R.implement : { ...R.implement, headSha: SHA_B });
-  const scen = (validate) => ({ ...base, "validate-and-dod": validate, "reimplement-after-validate": noCommit });
-  const orig = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, scen((p, o, n) => [failAt("flaky"), BLOCKED_AT_B][n]), { store });
-  // pass 1 fails at A, no-commit reimplement leaves head at A, pass 2 validates A again and blocks
-  assert.equal(orig.error && orig.error.name, "EscalationStop", orig.error && orig.error.stack);
-  const paused = pausedFrom(orig, "pause-for-human");
-  assert.deepEqual([paused.points[0].sha, paused.points[0].pass], [SHA_A, 2]);
-  const resumed = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r1", pausedSmoke: paused },
-    scen((p, o, n) => [{ ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass", carried: true }, { id: "AC3", name: "live call", status: "pass" }] }, FULL_GREEN][n]), { cache: store });
-  assert.equal(resumed.error, null, resumed.error && resumed.error.stack);
-  const v = resumed.prompts.filter((p) => p.label === "validate-and-dod");
-  assert.match(v[0].prompt, /pass 2/);
-  assert.match(v[0].prompt, /INCREMENTAL SMOKE/);
-});
 
-test("single: B1 — a resume whose replay never reaches the paused point (or passes it) is a loud diverged pause, not a silent drop", async () => {
-  const paused = { sha: SHA_B, pass: 2, confirm: false, cases: [{ id: "AC1", name: "a", status: "pass" }, { id: "AC3", name: "b", status: "blocked" }] };
-  // Replay validates at pass 1 / SHA_A, passes, and would ship without ever reaching pass 2 / SHA_B.
-  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r1", pausedSmoke: paused }, { ...HAPPY, "pause-for-human": "posted" });
-  assert.equal(run.error && run.error.name, "EscalationStop", run.error && run.error.stack);
-  assert.ok(!run.labels.includes("push-and-open-pr"), "never ships with the resume state unapplied");
-  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /resume diverged/i);
-  assert.doesNotMatch(run.prompts.find((p) => p.label === "validate-and-dod").prompt, /resume r1/, "earlier validates do not fold the nonce");
-});
 
-test("federated: B1 — a feature's pause at pass 2 resumes from the cache at exactly that point", async () => {
-  const store = new Map();
-  const base = { ...FED_HAPPY, "pause-feature-for-human:f1": "posted", [T + "reimplement-after-validate"]: { ...R.implement, headSha: SHA_B } };
-  const orig = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, { ...base, [T + "validate-and-dod"]: (p, o, n) => [failAt("502"), BLOCKED_AT_B][n] }, { store });
-  assert.equal(orig.error, null, orig.error && orig.error.stack);
-  const paused = pausedFrom(orig, "pause-feature-for-human:f1");
-  assert.equal(paused.points[0].pass, 2);
-  const feature = { ...FED_ARGS.features[0], pausedSmoke: paused };
-  const resumed = await runWorkflowRecording(SCRIPTS.federated, { ...FED_ARGS, resumeNonce: "r1", features: [feature] },
-    { ...base, [T + "validate-and-dod"]: (p, o, n) => [{ ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass", carried: true }, { id: "AC3", name: "live call", status: "pass" }] }, FULL_GREEN][n] }, { cache: store });
-  assert.equal(resumed.error, null, resumed.error && resumed.error.stack);
-  assert.ok(resumed.cachedHits.includes(T + "validate-and-dod"));
-  const v = resumed.prompts.filter((p) => p.label === T + "validate-and-dod");
-  assert.equal(v.length, 2);
-  assert.match(v[0].prompt, /pass 2/);
-  assert.match(v[0].prompt, /resume r1/);
-  assert.equal(resumed.result.shipped, true);
-});
 
-test("federated: B1 — an unreached pausedSmoke pauses that feature as diverged", async () => {
-  const feature = { ...FED_ARGS.features[0], pausedSmoke: { sha: SHA_B, pass: 2, confirm: false, cases: [{ id: "AC3", name: "b", status: "blocked" }] } };
-  const run = await runWorkflowRecording(SCRIPTS.federated, { ...FED_ARGS, resumeNonce: "r1", features: [feature] }, { ...FED_HAPPY, "pause-feature-for-human:f1": "posted" });
-  assert.equal(run.error, null, run.error && run.error.stack);
-  assert.equal(run.result.shipped, false);
-  assert.match(run.prompts.find((p) => p.label === "pause-feature-for-human:f1").prompt, /resume diverged/i);
-});
 
-test("single: B2 — a malformed args.pausedSmoke is rejected up front with a clear message", async () => {
-  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, pausedSmoke: { sha: "nope", cases: [] } }, HAPPY);
-  assert.match(run.error && run.error.message, /args\.pausedSmoke/);
-  assert.equal(run.labels.length, 0, "nothing dispatched");
-});
 
-test("federated: B2 — a malformed feature.pausedSmoke fails the whole input check up front, naming the feature", async () => {
-  const feature = { ...FED_ARGS.features[0], pausedSmoke: { sha: SHA_A, cases: [] } };
-  const run = await runWorkflowRecording(SCRIPTS.federated, { ...FED_ARGS, features: [feature] }, FED_HAPPY);
-  assert.match(run.error && run.error.message, /feature 'f1'.*pausedSmoke/);
-  assert.equal(run.labels.length, 0, "no feature was fanned out");
-});
 
 test("single: M1 — a top-level external blocker does not override case statuses: a real failure is counted and the blocked case listed", async () => {
   const dod = { ...R.dodPass, smokeAllPass: false, blocker: "usage_limit", blockerDetail: "x",
@@ -1419,11 +1283,11 @@ test("single: M1 — a top-level external blocker does not override case statuse
   assert.match(run.prompts.find((p) => p.label === "reimplement-after-validate").prompt, /code failure 1 of 3[\s\S]*NOT RUN[\s\S]*VPN/);
 });
 
-test("single: M1 — a blocked-only smoke with a mislabelled top-level external blocker still prints pausedSmoke", async () => {
+test("single: M1 — a blocked-only smoke with a mislabelled top-level external blocker still pauses", async () => {
   const dod = { ...BLOCKED_AT_B, blocker: "usage_limit" };
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": dod, "pause-for-human": "posted" });
   assert.equal(run.error && run.error.name, "EscalationStop");
-  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /pausedSmoke/);
+  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /AC2|VPN/);
 });
 
 test("single: M1 — a preflight stop (external blocker, no pass/fail case) still pauses through the generic path", async () => {
@@ -1487,71 +1351,17 @@ test("federated: M3 — an incremental smoke that omits previously reported case
 const BLOCKED_AT_C = { ...BLOCKED_AT_B, cases: [{ id: "AC1", name: "happy path", status: "pass", files: ["src/a.py"] }, { id: "AC3", name: "live call", status: "blocked", blocker: "infra", blockerDetail: "VPN dropped again", files: ["src/live.py"] }] };
 const CARRY_OK = { ...R.dodPass, cases: [{ id: "AC1", name: "happy path", status: "pass", carried: true }, { id: "AC3", name: "live call", status: "pass" }] };
 
-test("single: N1 — a resumed run that pauses again prints a chain; the third run replays both earlier runs from the cache", async () => {
-  const store = new Map();
-  const mk = (validate, shaOnReimpl) => ({ ...HAPPY, "pause-for-human": "posted", "validate-and-dod": validate, "reimplement-after-validate": { ...R.implement, headSha: shaOnReimpl } });
-  const r1 = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, mk((p, o, n) => [failAt("502"), BLOCKED_AT_B][n], SHA_B), { store });
-  assert.equal(r1.error && r1.error.name, "EscalationStop", r1.error && r1.error.stack);
-  const ps1 = pausedFrom(r1, "pause-for-human");
-  assert.equal(ps1.points.length, 1);
-  const r2 = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r1", pausedSmoke: ps1 }, mk((p, o, n) => [failAt("timeout"), BLOCKED_AT_C][n], SHA_C), { cache: store, store });
-  assert.equal(r2.error && r2.error.name, "EscalationStop", r2.error && r2.error.stack);
-  assert.ok(r2.cachedHits.includes("validate-and-dod"), "run 2 replays the pass-1 validate");
-  const ps2 = pausedFrom(r2, "pause-for-human");
-  assert.deepEqual(ps2.points.map((p) => [p.sha, p.pass, p.nonce]), [[SHA_B, 2, ""], [SHA_C, 3, "r1"]], "the chain keeps the inherited point and adds the new one");
-  const r3 = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r2", pausedSmoke: ps2 }, mk((p, o, n) => [CARRY_OK, FULL_GREEN][n], SHA_D), { cache: store, store });
-  assert.equal(r3.error, null, r3.error && r3.error.stack);
-  assert.equal(r3.cachedHits.filter((l) => l === "validate-and-dod").length, 2, "pass-1 and the seeded pass-2 validates both replay");
-  assert.equal(r3.cachedHits.filter((l) => l === "reimplement-after-validate").length, 2);
-  const v = r3.prompts.filter((p) => p.label === "validate-and-dod");
-  assert.equal(v.length, 2, "only the paused validate and the confirmation run for real");
-  assert.match(v[0].prompt, new RegExp(SHA_C));
-  assert.match(v[0].prompt, /pass 3, resume r2/);
-  assert.match(v[0].prompt, /INCREMENTAL SMOKE/);
-  assert.match(v[0].prompt, /BLOCKED[\s\S]*AC3/);
-  assert.equal(r3.result.prUrl, R.ship.prUrl);
-});
 
-test("federated: N1 — a resumed feature that pauses again prints a chain; the third run replays from the cache", async () => {
-  const store = new Map();
-  const mk = (validate, sha) => ({ ...FED_HAPPY, "pause-feature-for-human:f1": "posted", [T + "validate-and-dod"]: validate, [T + "reimplement-after-validate"]: { ...R.implement, headSha: sha } });
-  const r1 = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, mk((p, o, n) => [failAt("502"), BLOCKED_AT_B][n], SHA_B), { store });
-  const ps1 = pausedFrom(r1, "pause-feature-for-human:f1");
-  const f = (ps) => ({ ...FED_ARGS.features[0], pausedSmoke: ps });
-  const r2 = await runWorkflowRecording(SCRIPTS.federated, { ...FED_ARGS, resumeNonce: "r1", features: [f(ps1)] }, mk((p, o, n) => [failAt("timeout"), BLOCKED_AT_C][n], SHA_C), { cache: store, store });
-  const ps2 = pausedFrom(r2, "pause-feature-for-human:f1");
-  assert.deepEqual(ps2.points.map((p) => [p.sha, p.pass, p.nonce]), [[SHA_B, 2, ""], [SHA_C, 3, "r1"]]);
-  const r3 = await runWorkflowRecording(SCRIPTS.federated, { ...FED_ARGS, resumeNonce: "r2", features: [f(ps2)] }, mk((p, o, n) => [CARRY_OK, FULL_GREEN][n], SHA_D), { cache: store, store });
-  assert.equal(r3.error, null, r3.error && r3.error.stack);
-  assert.equal(r3.cachedHits.filter((l) => l === T + "validate-and-dod").length, 2);
-  const v = r3.prompts.filter((p) => p.label === T + "validate-and-dod");
-  assert.equal(v.length, 2);
-  assert.match(v[0].prompt, /pass 3, resume r2/);
-  assert.match(v[0].prompt, /INCREMENTAL SMOKE/);
-  assert.equal(r3.result.shipped, true);
-});
 
-test("single: N1 — the legacy single-point pausedSmoke shape is still accepted and normalised to a one-point chain", async () => {
-  const legacy = { sha: SHA_A, pass: 1, confirm: false, cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC3", name: "live call", status: "blocked" }] };
-  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r1", pausedSmoke: legacy }, { ...HAPPY, "validate-and-dod": (p, o, n) => [CARRY_OK, FULL_GREEN][n] });
-  assert.equal(run.error, null, run.error && run.error.stack);
-  assert.match(run.prompts.find((p) => p.label === "validate-and-dod").prompt, /INCREMENTAL SMOKE/);
-});
 
-test("single: N1 — a chain whose points are not in ascending order is rejected up front", async () => {
-  const c = [{ id: "AC3", name: "b", status: "blocked" }];
-  const pt = (pass) => ({ sha: SHA_A, pass, confirm: false, nonce: "", cases: c });
-  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, pausedSmoke: { points: [pt(3), pt(2)] } }, HAPPY);
-  assert.match(run.error && run.error.message, /args\.pausedSmoke/);
-});
 
-test("single: N2 — a red suite caused by an outage (blocked case, external top-level blocker, no failed case) pauses with pausedSmoke", async () => {
+test("single: N2 — a red suite caused by an outage (blocked case, external top-level blocker, no failed case) pauses (blocked case listed)", async () => {
   const dod = { ...R.dodPass, gatesPass: false, smokeAllPass: false, blocker: "infra", blockerDetail: "integration: VPN dropped",
     cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC2", name: "live", status: "blocked", blocker: "infra", blockerDetail: "VPN dropped" }] };
   const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": dod, "pause-for-human": "posted" });
   assert.equal(run.error && run.error.name, "EscalationStop");
   assert.ok(!run.labels.includes("reimplement-after-validate"), "no validate slot spent");
-  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /pausedSmoke/);
+  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /AC2|VPN/);
 });
 
 test("single: N2 — a red suite flagged code with a blocked case is still a code failure", async () => {
@@ -1563,12 +1373,12 @@ test("single: N2 — a red suite flagged code with a blocked case is still a cod
   assert.match(run.prompts.find((p) => p.label === "reimplement-after-validate").prompt, /code failure 1 of 3/);
 });
 
-test("federated: N2 — a red suite caused by an outage pauses the feature with pausedSmoke", async () => {
+test("federated: N2 — a red suite caused by an outage pauses the feature", async () => {
   const dod = { ...R.dodPass, gatesPass: false, smokeAllPass: false, blocker: "infra", blockerDetail: "integration: VPN dropped",
     cases: [{ id: "AC1", name: "happy path", status: "pass" }, { id: "AC2", name: "live", status: "blocked", blocker: "infra", blockerDetail: "VPN dropped" }] };
   const run = await runWorkflowRecording(SCRIPTS.federated, FED_ARGS, { ...FED_HAPPY, [T + "validate-and-dod"]: dod, "pause-feature-for-human:f1": "posted" });
   assert.ok(!run.labels.includes(T + "reimplement-after-validate"));
-  assert.match(run.prompts.find((p) => p.label === "pause-feature-for-human:f1").prompt, /pausedSmoke/);
+  assert.match(run.prompts.find((p) => p.label === "pause-feature-for-human:f1").prompt, /VPN/);
 });
 
 test("single: N4 — the preflight step tells the agent to report every case as blocked, never fail", async () => {
@@ -1576,19 +1386,25 @@ test("single: N4 — the preflight step tells the agent to report every case as 
   assert.match(run.prompts.find((p) => p.label === "validate-and-dod").prompt, /report every case with status 'blocked'[^.]*never 'fail'/i);
 });
 
-test("federated: N3 — on a resumed batch a sibling feature's validates all replay from the cache", async () => {
-  const T2 = "feat:f2:";
-  const two = { devBranch: "main", features: [FED_ARGS.features[0], { id: "f2", title: "light mode", issue: "owner/repo#2", plan: "do it" }] };
-  const f2 = Object.fromEntries(Object.entries(FED_HAPPY).filter(([k]) => k.startsWith(T)).map(([k, v]) => [T2 + k.slice(T.length), v]));
-  const store = new Map();
-  const scen = (validate1) => ({ ...FED_HAPPY, ...f2, "pause-feature-for-human:f1": "posted", [T + "validate-and-dod"]: validate1, "integrate": { merged: ["f2"], blocker: "none" } });
-  const r1 = await runWorkflowRecording(SCRIPTS.federated, two, scen(BLOCKED_AT_B), { store });
-  assert.equal(r1.error, null, r1.error && r1.error.stack);
-  assert.ok(r1.labels.includes(T2 + "validate-and-dod"), "the sibling validated in the first run");
-  const ps = pausedFrom(r1, "pause-feature-for-human:f1");
-  const resumedArgs = { ...two, resumeNonce: "r1", features: [{ ...two.features[0], pausedSmoke: ps }, two.features[1]] };
-  const r2 = await runWorkflowRecording(SCRIPTS.federated, resumedArgs, { ...scen((p, o, n) => [CARRY_OK, FULL_GREEN][n]), "integrate": { merged: ["f1", "f2"], blocker: "none" } }, { cache: store, store });
-  assert.equal(r2.error, null, r2.error && r2.error.stack);
-  assert.ok(r2.cachedHits.includes(T2 + "validate-and-dod"), "the sibling's validate is a cache hit");
-  assert.equal(r2.prompts.filter((p) => p.label === T2 + "validate-and-dod").length, 0, "no real smoke for the sibling");
+
+test("single: validate prompt — blocker='code' when a case OR a suite failed because of the change", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, HAPPY);
+  assert.match(run.prompts.find((p) => p.label === "validate-and-dod").prompt, /'code' when a case or a suite failed because of the change/);
+});
+
+test("both scripts: no pausedSmoke / siblingNonce / validateResumeTag machinery (resume record is tracked in #20)", async () => {
+  for (const f of Object.values(SCRIPTS)) {
+    const src = await readFile(new URL(f, `file://${repoRoot}`), "utf8");
+    assert.doesNotMatch(src, /pausedSmoke|siblingNonce|batchPriorNonce|validateResumeTag|applyPausedSmoke/, f);
+  }
+});
+
+test("both scripts: the validate prompt's resume nonce handling is the base branch's (every validate carries it)", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, { ...BASE_ARGS, resumeNonce: "r1" }, HAPPY);
+  assert.match(run.prompts.find((p) => p.label === "validate-and-dod").prompt, /pass 1, resume r1 \(spec D4/);
+});
+
+test("single: #17 — the blocked pause tells the operator to resume as for any other pause", async () => {
+  const run = await runWorkflowRecording(SCRIPTS.single, BASE_ARGS, { ...HAPPY, "validate-and-dod": blockedDod(), "pause-for-human": "posted" });
+  assert.match(run.prompts.find((p) => p.label === "pause-for-human").prompt, /resume the run as for any other pause/);
 });
